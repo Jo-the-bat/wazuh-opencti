@@ -172,6 +172,33 @@ jobs:
           docker compose exec -T minio curl -sf http://localhost:9000/minio/health/live && echo "MinIO: OK"
           docker compose exec -T rabbitmq rabbitmq-diagnostics -q ping && echo "RabbitMQ: OK"
 
+      - name: Test backup script
+        run: |
+          bash backup.sh ./test-backup
+          [ -d ./test-backup ] || { echo "FAIL: backup dir not created"; exit 1; }
+          [ -f ./test-backup/config.tar.gz ] || { echo "FAIL: config backup missing"; exit 1; }
+          ls -la ./test-backup/
+          echo "Backup: OK"
+
+      - name: Test restore script (non-interactive)
+        run: |
+          # Restore expects confirmation — pipe "yes"
+          echo "yes" | bash restore.sh ./test-backup
+          echo "Restore: OK"
+
+      - name: Verify services recovered after restore
+        run: |
+          for i in $(seq 1 24); do
+            HEALTHY=$(docker compose ps --format json 2>/dev/null | jq -r '.Health' | grep -c "healthy" || true)
+            if [ "$HEALTHY" -eq 3 ]; then
+              echo "All services healthy after restore!"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL: Services not healthy after restore"
+          exit 1
+
       - name: Teardown
         if: always()
         run: docker compose down -v

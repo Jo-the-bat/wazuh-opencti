@@ -1,0 +1,150 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly scan every Monday at 6 AM UTC
+    - cron: "0 6 * * 1"
+
+jobs:
+  secret-scanning:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  python-security:
+    name: Python security (bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Run bandit
+        run: |
+          pip install bandit -q
+          # B108: hardcoded tmp, B110: try/except/pass, B112: try/except/continue
+          # These are acceptable in this integration script context
+          bandit -r config/wazuh_integrations/custom-opencti.py \
+            -s B108,B110,B112 \
+            -f txt || true
+          # Fail only on high severity
+          bandit -r config/wazuh_integrations/custom-opencti.py \
+            -s B108,B110,B112 \
+            -ll
+
+  iac-scanning:
+    name: IaC scanning (checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Run checkov on docker-compose
+        run: |
+          pip install checkov -q
+          checkov -f docker-compose.yml \
+            --framework docker_compose \
+            --skip-check CKV_DOCKER_COMPOSE_2,CKV_DOCKER_COMPOSE_3,CKV_DOCKER_COMPOSE_4 \
+            --compact \
+            --quiet \
+            || true
+          # CKV_DOCKER_COMPOSE_2: no user set (many images require root)
+          # CKV_DOCKER_COMPOSE_3: no security_opt (not needed for all services)
+          # CKV_DOCKER_COMPOSE_4: no cap_drop (not needed for all services)
+          # Run again with soft-fail for visibility but don't block
+          echo "Checkov scan complete (advisory only)"
+
+  image-cve-scan:
+    name: Image CVE scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Generate CI .env
+        run: |
+          cat > .env << 'EOF'
+          WAZUH_VERSION=4.14.4
+          WAZUH_INDEXER_PASSWORD=CiTestPassword1!
+          WAZUH_API_PASSWORD=CiTestPassword1!
+          WAZUH_DASHBOARD_PASSWORD=CiTestPassword1!
+          OPENCTI_VERSION=6.9.28
+          OPENCTI_BASE_URL=https://localhost:8443
+          OPENCTI_ADMIN_EMAIL=test@test.io
+          OPENCTI_ADMIN_PASSWORD=CiTestPassword1
+          OPENCTI_ADMIN_TOKEN=00000000-0000-0000-0000-000000000001
+          OPENCTI_PORT=8443
+          OPENCTI_HEALTH_KEY=CiTestHealthKey
+          ELASTICSEARCH_VERSION=8.19.13
+          ELASTIC_MEMORY_SIZE=3G
+          ELASTIC_PASSWORD=CiTestPassword1
+          REDIS_VERSION=7.4
+          REDIS_PASSWORD=CiTestPassword1
+          RABBITMQ_VERSION=4.2.5-management
+          RABBITMQ_DEFAULT_USER=opencti
+          RABBITMQ_DEFAULT_PASS=CiTestPassword1
+          MINIO_VERSION=RELEASE.2025-09-07T16-13-09Z
+          MINIO_ROOT_USER=opencti
+          MINIO_ROOT_PASSWORD=CiTestPassword1
+          CONNECTOR_EXPORT_FILE_STIX_ID=00000000-0000-0000-0000-000000000002
+          CONNECTOR_EXPORT_FILE_CSV_ID=00000000-0000-0000-0000-000000000003
+          CONNECTOR_IMPORT_FILE_STIX_ID=00000000-0000-0000-0000-000000000004
+          CONNECTOR_IMPORT_DOCUMENT_ID=00000000-0000-0000-0000-000000000005
+          CONNECTOR_MITRE_ID=00000000-0000-0000-0000-000000000006
+          CONNECTOR_OPENCTI_DATASETS_ID=00000000-0000-0000-0000-000000000007
+          CONNECTOR_URLHAUS_ID=00000000-0000-0000-0000-000000000008
+          CONNECTOR_CISA_KEV_ID=00000000-0000-0000-0000-000000000009
+          CONNECTOR_THREATFOX_ID=00000000-0000-0000-0000-000000000010
+          CONNECTOR_VXVAULT_ID=00000000-0000-0000-0000-000000000013
+          CONNECTOR_DISARM_ID=00000000-0000-0000-0000-000000000014
+          WAZUH_CONNECTOR_VERSION=0.3.0
+          CONNECTOR_WAZUH_ID=00000000-0000-0000-0000-000000000011
+          SHUFFLE_VERSION=v2.2.0
+          SHUFFLE_OPENSEARCH_VERSION=2.14.0
+          SHUFFLE_DEFAULT_USERNAME=admin
+          SHUFFLE_DEFAULT_PASSWORD=CiTestPassword1
+          SHUFFLE_DEFAULT_APIKEY=00000000-0000-0000-0000-000000000012
+          SHUFFLE_ENCRYPTION_MODIFIER=CiTestEncryptionModifier12345678
+          SHUFFLE_PORT=3443
+          PROMETHEUS_VERSION=v3.11.0
+          CADVISOR_VERSION=v0.56.2
+          GRAFANA_VERSION=12.4.2
+          GRAFANA_ADMIN_PASSWORD=CiTestPassword1
+          GRAFANA_PORT=4443
+          SMTP_HOSTNAME=localhost
+          OPENCTI_HOSTNAME=localhost
+          EOF
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get install -yqq wget apt-transport-https gnupg > /dev/null
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list > /dev/null
+          sudo apt-get update -qq && sudo apt-get install -yqq trivy > /dev/null
+
+      - name: Scan key images for critical CVEs
+        run: |
+          # Scan the most important images (not all 24 — too slow)
+          IMAGES=(
+            "nginx:1.28-alpine"
+            "redis:7.4"
+            "rabbitmq:4.2.5-management"
+            "opensearchproject/opensearch:2.14.0"
+          )
+          FAILED=0
+          for img in "${IMAGES[@]}"; do
+            echo "=== Scanning ${img} ==="
+            if ! trivy image --severity CRITICAL --exit-code 0 --no-progress "$img" 2>/dev/null; then
+              echo "WARNING: scan failed for ${img}"
+            fi
+          done
+          echo "CVE scan complete (advisory — does not block pipeline)"
