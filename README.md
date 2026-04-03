@@ -278,6 +278,82 @@ docker compose restart wazuh.manager
 docker compose ps
 ```
 
+## Operations
+
+### Backup and Restore
+
+```bash
+# Full backup (config + all data volumes, ~online, no downtime)
+bash backup.sh
+
+# Backup to a specific directory
+bash backup.sh ./backups/before-upgrade
+
+# Restore from backup (stops services, overwrites data, restarts)
+bash restore.sh ./backups/20260403-120000
+```
+
+Backups include:
+- All configuration files and TLS certificates
+- Elasticsearch data (OpenCTI threat intel)
+- Wazuh indexer data (SIEM alerts/indices)
+- Redis, RabbitMQ, MinIO data
+- Shuffle workflows and execution data
+
+Schedule automatic daily backups via cron:
+```bash
+# Add to crontab -e:
+0 2 * * * cd /path/to/wazuh-opencti && bash backup.sh >> /var/log/soc-backup.log 2>&1
+```
+
+### Upgrade
+
+```bash
+# Edit .env to set new versions, then:
+bash upgrade.sh
+```
+
+The upgrade script:
+1. Creates a pre-upgrade backup
+2. Pulls new images for configured versions
+3. Performs a rolling restart (infrastructure first, then applications)
+4. Verifies all services are healthy
+5. Prints rollback instructions if something goes wrong
+
+### Monitoring
+
+A built-in health monitor checks all container healthchecks and alerts on failures:
+
+```bash
+# Check stack health
+bash scripts/healthcheck-monitor.sh
+
+# Alert on failures (webhook, email, or both)
+ALERT_WEBHOOK_URL=https://hooks.slack.com/... bash scripts/healthcheck-monitor.sh --alert
+
+# Send alerts to a Shuffle workflow
+ALERT_WEBHOOK_URL=http://shuffle-backend:5001/api/v1/hooks/YOUR_ID bash scripts/healthcheck-monitor.sh --alert
+```
+
+Schedule via cron for continuous monitoring:
+```bash
+# Every 5 minutes, alert on failures:
+*/5 * * * * cd /path/to/wazuh-opencti && ALERT_WEBHOOK_URL=https://... bash scripts/healthcheck-monitor.sh --alert >> /var/log/soc-monitor.log 2>&1
+```
+
+### Nginx Rate Limiting
+
+Rate limiting is enabled on all public endpoints to protect against brute-force attacks:
+
+| Endpoint | Rate | Burst |
+|----------|------|-------|
+| OpenCTI GraphQL API | 30 req/s | 20 |
+| OpenCTI general | 50 req/s | 30 |
+| Shuffle login API | 5 req/s | 5 |
+| Shuffle general | 50 req/s | 30 |
+
+Requests exceeding the limit receive HTTP 429 (Too Many Requests).
+
 ## Resource Requirements
 
 | Component | Memory Limit | Notes |

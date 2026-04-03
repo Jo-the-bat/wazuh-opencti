@@ -1,3 +1,6 @@
+# Backups
+backups/
+
 # Secrets and generated configs
 .env
 proxy.env
@@ -8,3 +11,4 @@ config/wazuh_cluster/wazuh_manager.conf
 # Generated TLS certificates
 config/wazuh_indexer_ssl_certs/
 config/nginx/ssl/
+__pycache__/
