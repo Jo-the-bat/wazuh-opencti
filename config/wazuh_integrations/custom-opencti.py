@@ -281,6 +281,11 @@ def send_error_event(msg, agent = None):
         'event_type': 'error',
         }}, agent)
 
+# Escape single quotes in values used in STIX pattern strings to prevent
+# malformed patterns from untrusted alert data (DNS names, URLs, etc.):
+def escape_stix(value):
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
 # Construct a stix pattern for a single IP address, either IPv4 or IPv6:
 def ind_ip_pattern(string):
     if ipaddress.ip_address(string).version == 6:
@@ -329,7 +334,7 @@ def query_opencti(alert, url, token):
             if packetbeat_dns(alert):
                 addrs = filter_packetbeat_dns(alert['data']['dns']['answers']) if 'answers' in alert['data']['dns'] else []
                 filter_values = [alert['data']['dns']['question']['name']] + addrs
-                ind_filter = [f"[domain-name:value = '{filter_values[0]}']", f"[hostname:value = '{filter_values[0]}']"] + list(map(lambda a: ind_ip_pattern(a), addrs))
+                ind_filter = [f"[domain-name:value = '{escape_stix(filter_values[0])}']", f"[hostname:value = '{escape_stix(filter_values[0])}']"] + list(map(lambda a: ind_ip_pattern(a), addrs))
             else:
                 # Look up either dest or source IP, whichever is public:
                 filter_values = [next(filter(lambda x: x and ipaddress.ip_address(x).is_global, [oneof('dest_ip', 'dstip', within=alert['data']), oneof('src_ip', 'srcip', within=alert['data'])]), None)]
@@ -342,7 +347,7 @@ def query_opencti(alert, url, token):
             query = alert['data']['win']['eventdata']['queryName']
             results = format_dns_results(alert['data']['win']['eventdata']['queryResults'])
             filter_values = [query] + results
-            ind_filter = [f"[domain-name:value = '{filter_values[0]}']", f"[hostname:value = '{filter_values[0]}']"] + list(map(lambda a: ind_ip_pattern(a), results))
+            ind_filter = [f"[domain-name:value = '{escape_stix(filter_values[0])}']", f"[hostname:value = '{escape_stix(filter_values[0])}']"] + list(map(lambda a: ind_ip_pattern(a), results))
         # Look up sha256 hashes for files added to the system or files that have been modified:
         elif 'syscheck_file' in groups and any(x in groups for x in ['syscheck_entry_added', 'syscheck_entry_modified']):
             filter_key = 'hashes.SHA256'
@@ -357,7 +362,7 @@ def query_opencti(alert, url, token):
         elif 'audit_command' in groups:
             # Extract any command line arguments that looks vaguely like a URL (starts with 'http'):
             filter_values = [val for val in alert['data']['audit']['execve'].values() if val.startswith('http')]
-            ind_filter = list(map(lambda x: f"[url:value = '{x}']", filter_values))
+            ind_filter = list(map(lambda x: f"[url:value = '{escape_stix(x)}']", filter_values))
             if not filter_values:
                 sys.exit()
         # Nothing to do:
