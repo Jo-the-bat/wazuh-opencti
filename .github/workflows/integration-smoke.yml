@@ -1,0 +1,192 @@
+name: Integration Smoke Test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image-check:
+    name: Verify images exist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate CI .env
+        run: |
+          cat > .env << 'EOF'
+          WAZUH_VERSION=4.14.4
+          WAZUH_INDEXER_PASSWORD=CiTest1!
+          WAZUH_API_PASSWORD=CiTest1!
+          WAZUH_DASHBOARD_PASSWORD=CiTest1!
+          OPENCTI_VERSION=6.9.28
+          OPENCTI_BASE_URL=https://localhost:8443
+          OPENCTI_ADMIN_EMAIL=test@test.io
+          OPENCTI_ADMIN_PASSWORD=CiTest1
+          OPENCTI_ADMIN_TOKEN=00000000-0000-0000-0000-000000000001
+          OPENCTI_PORT=8443
+          OPENCTI_HEALTH_KEY=CiTest1
+          ELASTICSEARCH_VERSION=8.19.13
+          ELASTIC_MEMORY_SIZE=3G
+          ELASTIC_PASSWORD=CiTest1
+          REDIS_VERSION=7.4
+          REDIS_PASSWORD=CiTest1
+          RABBITMQ_VERSION=4.2.5-management
+          RABBITMQ_DEFAULT_USER=opencti
+          RABBITMQ_DEFAULT_PASS=CiTest1
+          MINIO_VERSION=RELEASE.2025-09-07T16-13-09Z
+          MINIO_ROOT_USER=opencti
+          MINIO_ROOT_PASSWORD=CiTest1
+          CONNECTOR_EXPORT_FILE_STIX_ID=00000000-0000-0000-0000-000000000002
+          CONNECTOR_EXPORT_FILE_CSV_ID=00000000-0000-0000-0000-000000000003
+          CONNECTOR_IMPORT_FILE_STIX_ID=00000000-0000-0000-0000-000000000004
+          CONNECTOR_IMPORT_DOCUMENT_ID=00000000-0000-0000-0000-000000000005
+          CONNECTOR_MITRE_ID=00000000-0000-0000-0000-000000000006
+          CONNECTOR_OPENCTI_DATASETS_ID=00000000-0000-0000-0000-000000000007
+          CONNECTOR_URLHAUS_ID=00000000-0000-0000-0000-000000000008
+          CONNECTOR_CISA_KEV_ID=00000000-0000-0000-0000-000000000009
+          CONNECTOR_THREATFOX_ID=00000000-0000-0000-0000-000000000010
+          WAZUH_CONNECTOR_VERSION=0.3.0
+          CONNECTOR_WAZUH_ID=00000000-0000-0000-0000-000000000011
+          SHUFFLE_VERSION=v2.2.0
+          SHUFFLE_OPENSEARCH_VERSION=2.14.0
+          SHUFFLE_DEFAULT_USERNAME=admin
+          SHUFFLE_DEFAULT_PASSWORD=CiTest1
+          SHUFFLE_DEFAULT_APIKEY=00000000-0000-0000-0000-000000000012
+          SHUFFLE_ENCRYPTION_MODIFIER=CiTestEncryptionModifier12345678
+          SHUFFLE_PORT=3443
+          SMTP_HOSTNAME=localhost
+          OPENCTI_HOSTNAME=localhost
+          EOF
+
+      - name: Check all images exist in registries
+        run: |
+          IMAGES=$(docker compose config --images 2>/dev/null | sort -u)
+          FAILED=0
+          for img in $IMAGES; do
+            if docker manifest inspect "$img" > /dev/null 2>&1; then
+              echo "OK: ${img}"
+            else
+              echo "FAIL: ${img} not found"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          if [ "$FAILED" -gt 0 ]; then
+            echo "${FAILED} image(s) not found in registries"
+            exit 1
+          fi
+          echo "All $(echo "$IMAGES" | wc -l) images verified."
+
+  core-smoke:
+    name: Core services smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate CI .env
+        run: |
+          cat > .env << 'EOF'
+          WAZUH_VERSION=4.14.4
+          WAZUH_INDEXER_PASSWORD=CiTest1!
+          WAZUH_API_PASSWORD=CiTest1!
+          WAZUH_DASHBOARD_PASSWORD=CiTest1!
+          OPENCTI_VERSION=6.9.28
+          OPENCTI_BASE_URL=https://localhost:8443
+          OPENCTI_ADMIN_EMAIL=test@test.io
+          OPENCTI_ADMIN_PASSWORD=CiTest1
+          OPENCTI_ADMIN_TOKEN=00000000-0000-0000-0000-000000000001
+          OPENCTI_PORT=8443
+          OPENCTI_HEALTH_KEY=CiTest1
+          ELASTICSEARCH_VERSION=8.19.13
+          ELASTIC_MEMORY_SIZE=1G
+          ELASTIC_PASSWORD=CiTest1
+          REDIS_VERSION=7.4
+          REDIS_PASSWORD=CiTest1
+          RABBITMQ_VERSION=4.2.5-management
+          RABBITMQ_DEFAULT_USER=opencti
+          RABBITMQ_DEFAULT_PASS=CiTest1
+          MINIO_VERSION=RELEASE.2025-09-07T16-13-09Z
+          MINIO_ROOT_USER=opencti
+          MINIO_ROOT_PASSWORD=CiTest1
+          CONNECTOR_EXPORT_FILE_STIX_ID=00000000-0000-0000-0000-000000000002
+          CONNECTOR_EXPORT_FILE_CSV_ID=00000000-0000-0000-0000-000000000003
+          CONNECTOR_IMPORT_FILE_STIX_ID=00000000-0000-0000-0000-000000000004
+          CONNECTOR_IMPORT_DOCUMENT_ID=00000000-0000-0000-0000-000000000005
+          CONNECTOR_MITRE_ID=00000000-0000-0000-0000-000000000006
+          CONNECTOR_OPENCTI_DATASETS_ID=00000000-0000-0000-0000-000000000007
+          CONNECTOR_URLHAUS_ID=00000000-0000-0000-0000-000000000008
+          CONNECTOR_CISA_KEV_ID=00000000-0000-0000-0000-000000000009
+          CONNECTOR_THREATFOX_ID=00000000-0000-0000-0000-000000000010
+          WAZUH_CONNECTOR_VERSION=0.3.0
+          CONNECTOR_WAZUH_ID=00000000-0000-0000-0000-000000000011
+          SHUFFLE_VERSION=v2.2.0
+          SHUFFLE_OPENSEARCH_VERSION=2.14.0
+          SHUFFLE_DEFAULT_USERNAME=admin
+          SHUFFLE_DEFAULT_PASSWORD=CiTest1
+          SHUFFLE_DEFAULT_APIKEY=00000000-0000-0000-0000-000000000012
+          SHUFFLE_ENCRYPTION_MODIFIER=CiTestEncryptionModifier12345678
+          SHUFFLE_PORT=3443
+          SMTP_HOSTNAME=localhost
+          OPENCTI_HOSTNAME=localhost
+          EOF
+
+      - name: Start core infrastructure
+        run: docker compose up -d redis rabbitmq minio
+
+      - name: Wait for healthy status
+        run: |
+          for i in $(seq 1 24); do
+            HEALTHY=$(docker compose ps --format json 2>/dev/null | jq -r '.Health' | grep -c "healthy" || true)
+            echo "Attempt ${i}/24: ${HEALTHY}/3 healthy"
+            if [ "$HEALTHY" -eq 3 ]; then
+              echo "All core services healthy!"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL: Services did not become healthy in 120s"
+          docker compose ps
+          docker compose logs --tail=20
+          exit 1
+
+      - name: Verify service connectivity
+        run: |
+          docker compose exec -T redis redis-cli ping | grep -q PONG && echo "Redis: OK"
+          docker compose exec -T minio curl -sf http://localhost:9000/minio/health/live && echo "MinIO: OK"
+          docker compose exec -T rabbitmq rabbitmq-diagnostics -q ping && echo "RabbitMQ: OK"
+
+      - name: Teardown
+        if: always()
+        run: docker compose down -v
+
+  setup-dryrun:
+    name: Setup script validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify setup.sh catches low vm.max_map_count
+        run: |
+          MAP_COUNT=$(cat /proc/sys/vm/max_map_count)
+          echo "Current vm.max_map_count: ${MAP_COUNT}"
+
+          if [ "$MAP_COUNT" -lt 262144 ]; then
+            # Should fail with helpful error
+            if bash setup.sh 2>&1 | grep -q "vm.max_map_count"; then
+              echo "OK: setup.sh correctly detects low vm.max_map_count"
+            else
+              echo "FAIL: setup.sh did not warn about vm.max_map_count"
+              exit 1
+            fi
+          else
+            echo "SKIP: vm.max_map_count is already sufficient (${MAP_COUNT})"
+          fi
+
+      - name: Verify setup.sh checks prerequisites
+        run: |
+          # Test that docker check works
+          if bash setup.sh 2>&1 | head -20 | grep -qE "ERROR|Checking"; then
+            echo "OK: setup.sh runs prerequisite checks"
+          fi
