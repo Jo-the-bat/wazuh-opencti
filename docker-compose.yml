@@ -137,7 +137,7 @@ services:
       API_USERNAME: wazuh-wui
       API_PASSWORD: ${WAZUH_API_PASSWORD}
     healthcheck:
-      test: ["CMD-SHELL", "curl -sfk https://localhost:5601/api/status || exit 1"]
+      test: ["CMD-SHELL", "curl -sfk https://localhost:5601/ -o /dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -758,7 +758,7 @@ services:
       - BACKEND_PORT=5001
       - SHUFFLE_ORBORUS_EXECUTION_TIMEOUT=600
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:5001/api/v1/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5001/api/v1/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
