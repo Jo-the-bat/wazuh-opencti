@@ -1,5 +1,8 @@
-# Secrets
+# Secrets and generated configs
 .env
+config/wazuh_indexer/internal_users.yml
+config/wazuh_dashboard/wazuh.yml
+config/wazuh_cluster/wazuh_manager.conf
 
 # Generated TLS certificates
 config/wazuh_indexer_ssl_certs/

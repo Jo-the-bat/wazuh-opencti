@@ -1,0 +1,47 @@
+<group name="threat_intel,">
+   <rule id="100210" level="10">
+      <field name="integration">opencti</field>
+      <description>OpenCTI</description>
+      <group>opencti,</group>
+   </rule>
+
+   <rule id="100211" level="5">
+      <if_sid>100210</if_sid>
+      <field name="opencti.error">\.+</field>
+      <description>OpenCTI: Failed to connect to API</description>
+      <options>no_full_log</options>
+      <group>opencti,opencti_error,</group>
+   </rule>
+
+   <rule id="100212" level="12">
+      <if_sid>100210</if_sid>
+      <field name="opencti.event_type">indicator_pattern_match</field>
+      <description>OpenCTI: IoC found in threat intel: $(opencti.indicator.name)</description>
+      <options>no_full_log</options>
+      <group>opencti,opencti_alert,</group>
+   </rule>
+
+   <rule id="100213" level="12">
+      <if_sid>100210</if_sid>
+      <field name="opencti.event_type">observable_with_indicator</field>
+      <description>OpenCTI: IoC found in threat intel: $(opencti.observable_value)</description>
+      <options>no_full_log</options>
+      <group>opencti,opencti_alert,</group>
+   </rule>
+
+   <rule id="100214" level="10">
+      <if_sid>100210</if_sid>
+      <field name="opencti.event_type">observable_with_related_indicator</field>
+      <description>OpenCTI: IoC possibly found in threat intel (related): $(opencti.related.indicator.name)</description>
+      <options>no_full_log</options>
+      <group>opencti,opencti_alert,</group>
+   </rule>
+
+   <rule id="100215" level="10">
+      <if_sid>100210</if_sid>
+      <field name="opencti.event_type">indicator_partial_pattern_match</field>
+      <description>OpenCTI: IoC possibly found in threat intel: $(opencti.indicator.name)</description>
+      <options>no_full_log</options>
+      <group>opencti,opencti_alert,</group>
+   </rule>
+</group>
