@@ -1,0 +1,6 @@
+# Secrets
+.env
+
+# Generated TLS certificates
+config/wazuh_indexer_ssl_certs/
+config/nginx/ssl/
