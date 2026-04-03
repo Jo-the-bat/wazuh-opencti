@@ -14,7 +14,7 @@ jobs:
     name: Verify images exist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Generate CI .env
         run: |
           cat > .env << 'EOF'
@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Generate CI .env
         run: |
           cat > .env << 'EOF'
@@ -166,7 +166,7 @@ jobs:
     name: Setup script validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Verify setup.sh catches low vm.max_map_count
         run: |
           MAP_COUNT=$(cat /proc/sys/vm/max_map_count)
