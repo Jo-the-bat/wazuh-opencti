@@ -73,9 +73,8 @@ def debug(msg, do_log = False):
 
     now = time.strftime('%a %b %d %H:%M:%S %Z %Y')
     msg = '{0}: {1}\n'.format(now, msg)
-    f = open(log_file,'a')
-    f.write(msg)
-    f.close()
+    with open(log_file, 'a') as f:
+        f.write(msg)
 
 def log(msg):
     debug(msg, do_log=True)
@@ -358,7 +357,7 @@ def query_opencti(alert, url, token):
         elif 'audit_command' in groups:
             # Extract any command line arguments that looks vaguely like a URL (starts with 'http'):
             filter_values = [val for val in alert['data']['audit']['execve'].values() if val.startswith('http')]
-            ind_filter = list(map(lambda x: f"[url:value = 'x']", filter_values))
+            ind_filter = list(map(lambda x: f"[url:value = '{x}']", filter_values))
             if not filter_values:
                 sys.exit()
         # Nothing to do:

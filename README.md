@@ -1,0 +1,312 @@
+# Wazuh + OpenCTI + Shuffle SOAR
+
+Production-ready Docker Compose deployment of a complete security operations stack:
+
+- **Wazuh 4.14.4** — SIEM/XDR with agent management, vulnerability detection, and file integrity monitoring
+- **OpenCTI 6.9.28** — Cyber Threat Intelligence platform with automated threat feed ingestion
+- **Shuffle** — Open-source SOAR for no-code security automation workflows
+- **Bidirectional integration** — Wazuh alerts enriched with OpenCTI threat intel, OpenCTI sightings from Wazuh data
+
+## Architecture
+
+```
+                    +-----------+
+                    |   Nginx   |
+                    | HTTPS TLS |
+                    +-----+-----+
+                    :8443 | :3443
+              +-----------+-----------+
+              |                       |
+        +-----v-----+          +-----v-----+
+        |  OpenCTI   |          |  Shuffle  |
+        |  Platform  |          |   SOAR    |
+        +-----+------+          +-----+-----+
+              |                       |
+    +---------+---------+     +-------+-------+
+    |    |    |    |     |    |       |       |
+   ES Redis RMQ MinIO Workers  OpenSearch Orborus
+              |
+        +-----v------+
+        |   Wazuh     |
+        |   Manager   |<--- agents (1514/tcp)
+        +-----+-------+
+              |
+        +-----v------+
+        |   Wazuh     |
+        |   Indexer   |
+        +-----+-------+
+              |
+        +-----v------+
+        |   Wazuh     |
+        |  Dashboard  |:9443
+        +-------------+
+```
+
+**26 containers** (24 default + 3 optional API-key connectors):
+
+| Component | Services | Purpose |
+|-----------|----------|---------|
+| **Wazuh** | manager, indexer, dashboard | SIEM/XDR with mutual TLS |
+| **OpenCTI** | platform, 3 workers, Elasticsearch, Redis, RabbitMQ, MinIO | Threat intelligence |
+| **Shuffle** | backend, frontend, orborus, OpenSearch | Security automation |
+| **Connectors** | MITRE, URLhaus, CISA KEV, ThreatFox, OpenCTI Datasets | Threat feeds (free) |
+| **Integration** | wazuh-connector, custom-opencti scripts | Bidirectional enrichment |
+| **Nginx** | reverse proxy | HTTPS termination |
+
+## Quick Start
+
+### Prerequisites
+
+- Docker with Compose v2
+- 32 GB RAM minimum (recommended)
+- `vm.max_map_count >= 262144`:
+  ```bash
+  sudo sysctl -w vm.max_map_count=1048575
+  echo "vm.max_map_count=1048575" | sudo tee -a /etc/sysctl.conf
+  ```
+
+### Deploy
+
+```bash
+git clone https://github.com/Jo-the-bat/wazuh-opencti.git
+cd wazuh-opencti
+bash setup.sh
+```
+
+`setup.sh` handles everything: generates random passwords, creates TLS certificates, starts all services, and initializes Wazuh security. It's idempotent — safe to re-run.
+
+### Access
+
+| Service | URL | Default Credentials |
+|---------|-----|-------------------|
+| Wazuh Dashboard | `https://localhost:9443` | admin / (from setup output) |
+| OpenCTI | `https://localhost:8443` | admin@opencti.io / (from setup output) |
+| Shuffle SOAR | `https://localhost:3443` | admin / (from setup output) |
+
+All passwords are in `.env` (gitignored, generated per deployment).
+
+## Integrations
+
+### Wazuh <-> OpenCTI (automatic)
+
+Bidirectional enrichment works out of the box:
+
+1. **Wazuh -> OpenCTI**: When Wazuh detects an IP, hash, domain, or URL, the `custom-opencti` integration queries OpenCTI's GraphQL API. If it matches a known IOC, Wazuh generates a level 10-12 alert with full threat context.
+
+2. **OpenCTI -> Wazuh**: The `wazuh-connector` enrichment connector searches Wazuh alerts when viewing indicators in OpenCTI, creating STIX sightings.
+
+### Wazuh -> Shuffle (manual setup)
+
+Connect Wazuh alerts to Shuffle for automated response workflows:
+
+1. Log in to Shuffle at `https://localhost:3443`
+2. Create a new workflow with a **Webhook** trigger
+3. Copy the generated webhook URL
+4. Edit `config/wazuh_cluster/wazuh_manager.conf` — uncomment the Shuffle integration block and paste the URL:
+   ```xml
+   <integration>
+       <name>shuffle</name>
+       <hook_url>http://shuffle-backend:5001/api/v1/hooks/YOUR_WEBHOOK_ID</hook_url>
+       <level>3</level>
+       <alert_format>json</alert_format>
+   </integration>
+   ```
+5. Restart the manager:
+   ```bash
+   docker compose restart wazuh.manager
+   ```
+
+### Shuffle <-> OpenCTI
+
+Add the OpenCTI app in Shuffle to enrich alerts with threat intelligence:
+- URL: `http://opencti:8080`
+- API Token: `OPENCTI_ADMIN_TOKEN` from `.env`
+
+Example workflow: Wazuh alert -> extract IOC -> query OpenCTI -> if malicious -> block IP / create ticket / send alert.
+
+## Threat Intelligence Feeds
+
+### Enabled by default (free, no API key)
+
+| Connector | Data | Update Interval |
+|-----------|------|-----------------|
+| MITRE ATT&CK | Tactics, techniques, procedures | 7 days |
+| OpenCTI Datasets | Marking definitions, identities, locations | 7 days |
+| URLhaus | Malicious URLs | 3 days |
+| CISA KEV | Known exploited vulnerabilities | 7 days |
+| ThreatFox | IOCs (IPs, domains, hashes) | 3 days |
+
+### Optional (require API keys)
+
+Enable by adding API keys to `.env` and starting with the profile:
+
+```bash
+# AlienVault OTX (free key at https://otx.alienvault.com)
+docker compose --profile alienvault up -d
+
+# AbuseIPDB (free key at https://www.abuseipdb.com)
+docker compose --profile abuseipdb up -d
+
+# NVD/CVE (free key at https://nvd.nist.gov/developers/request-an-api-key)
+docker compose --profile cve up -d
+```
+
+## Web Proxy Support
+
+For deployments behind a corporate proxy:
+
+```bash
+cp proxy.env.example proxy.env
+# Edit proxy.env with your proxy URLs:
+#   HTTP_PROXY=http://proxy.corp:8080
+#   HTTPS_PROXY=http://proxy.corp:8080
+docker compose up -d
+```
+
+The proxy settings are applied to all internet-facing services (connectors, OpenCTI, Shuffle, Wazuh manager). Internal services are excluded via `NO_PROXY`. When `proxy.env` doesn't exist, proxy support is silently skipped.
+
+## Security
+
+All security features are enabled by default:
+
+- **All passwords randomized** per deployment (Wazuh, OpenCTI, Elasticsearch, Redis, RabbitMQ, MinIO, Shuffle)
+- **Wazuh mutual TLS** — indexer, manager, and dashboard communicate over TLS with generated certificates
+- **Elasticsearch authentication** — `xpack.security.enabled: true`
+- **Redis authentication** — `requirepass` enabled
+- **Wazuh connector TLS verification** — CA cert mounted and verified
+- **Randomized Wazuh cluster key** — `openssl rand -hex 16` per deployment
+- **Nginx hardening** — HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, `server_tokens off`, modern cipher suite (ECDHE+AESGCM/CHACHA20-POLY1305), SSL session cache
+- **Read-only config mounts** — all bind-mounted configs and certs use `:ro`
+- **OpenCTI session timeout** — 30 minutes idle
+- **Randomized health check key** — not hardcoded
+- **Configurable TLS hostname** — set `OPENCTI_HOSTNAME` in `.env`
+
+### Docker Socket
+
+Shuffle requires `/var/run/docker.sock` mounted on `shuffle-backend` and `shuffle-orborus` to manage workflow worker containers. This grants those containers Docker daemon access. This is an inherent Shuffle design requirement.
+
+## Reliability
+
+- **Healthchecks** on every service (26 containers)
+- **`depends_on` with conditions** — services wait for dependencies to be healthy before starting
+- **Resource limits** — memory caps on all services; JVM heaps and Node.js `--max-old-space-size` sized to fit
+- **Log rotation** — JSON file driver, 10 MB default (50 MB for Wazuh manager), 5 files per container
+- **Pinned image versions** — all images use explicit version tags from `.env`
+- **Error handling in setup.sh** — `set -euo pipefail`, explicit checks on bcrypt hashing, Docker Compose startup, Wazuh indexer readiness, and security admin initialization
+
+## Configuration
+
+### Exposed Ports
+
+| Port | Service | Protocol |
+|------|---------|----------|
+| 9443 | Wazuh Dashboard | HTTPS |
+| 8443 | OpenCTI Platform | HTTPS |
+| 3443 | Shuffle SOAR | HTTPS |
+| 1514 | Wazuh agent events | TCP |
+| 1515 | Wazuh agent enrollment | TCP |
+| 514 | Syslog | UDP |
+| 55000 | Wazuh REST API | HTTPS |
+
+### Key Files
+
+```
+docker-compose.yml                  # All services with healthchecks, resource limits, log rotation
+setup.sh                            # Automated setup: passwords, certs, config, deploy
+generate-indexer-certs.yml          # Wazuh TLS cert generation
+proxy.env.example                   # Web proxy template
+config/
+  certs.yml                         # Cert generator node definitions
+  nginx/
+    opencti.conf                    # OpenCTI HTTPS reverse proxy (port 8443)
+    shuffle.conf                    # Shuffle HTTPS reverse proxy (port 3443)
+  wazuh_indexer/
+    wazuh.indexer.yml               # OpenSearch configuration
+  wazuh_dashboard/
+    opensearch_dashboards.yml       # Dashboard TLS configuration
+  wazuh_integrations/
+    custom-opencti                  # Shell wrapper for OpenCTI integration
+    custom-opencti.py               # Python script: Wazuh->OpenCTI IOC lookup
+  wazuh_rules/
+    opencti_rules.xml               # Custom alert rules (100210-100215)
+```
+
+### Generated Files (gitignored)
+
+Created by `setup.sh`, never committed:
+
+- `.env` — all secrets, passwords, UUIDs, versions
+- `proxy.env` — web proxy settings (optional, user-created)
+- `config/wazuh_indexer/internal_users.yml` — bcrypt hashed passwords
+- `config/wazuh_dashboard/wazuh.yml` — API credentials
+- `config/wazuh_cluster/wazuh_manager.conf` — Wazuh manager config with tokens
+- `config/wazuh_indexer_ssl_certs/` — Wazuh TLS certificates
+- `config/nginx/ssl/` — Nginx self-signed certificates
+
+### Custom TLS Certificates
+
+To use your own certificates instead of self-signed:
+
+1. Place your cert and key at `config/nginx/ssl/opencti.crt` and `config/nginx/ssl/opencti.key`
+2. Set `OPENCTI_HOSTNAME` in `.env` to match your certificate CN
+3. Restart nginx: `docker compose restart nginx`
+
+## Commands
+
+```bash
+# Full setup (idempotent)
+bash setup.sh
+
+# Start/stop
+docker compose up -d
+docker compose down
+
+# Enable optional connectors
+docker compose --profile alienvault up -d
+docker compose --profile abuseipdb up -d
+docker compose --profile cve up -d
+
+# View logs
+docker compose logs -f wazuh.manager
+docker compose logs -f opencti
+docker compose logs -f shuffle-backend
+
+# Restart a service
+docker compose restart wazuh.manager
+
+# Check service health
+docker compose ps
+```
+
+## Resource Requirements
+
+| Component | Memory Limit | Notes |
+|-----------|-------------|-------|
+| Wazuh Manager | 2 GB | Increased log rotation (50 MB) |
+| Wazuh Indexer | 2 GB | JVM heap: 1 GB |
+| Wazuh Dashboard | 2 GB | |
+| Elasticsearch | 6 GB | JVM heap: 3 GB (for OpenCTI) |
+| Redis | 1 GB | |
+| RabbitMQ | 2 GB | |
+| MinIO | 1 GB | |
+| OpenCTI Platform | 4 GB | Node.js heap: 3 GB |
+| OpenCTI Workers (x3) | 3 GB | 1 GB each |
+| Shuffle OpenSearch | 2 GB | JVM heap: 1 GB |
+| Shuffle Backend | 2 GB | |
+| Shuffle Frontend | 512 MB | |
+| Shuffle Orborus | 512 MB | |
+| Connectors (x9) | 4.5 GB | 512 MB each |
+| Nginx | 256 MB | |
+| **Total** | **~33 GB** | Actual usage is typically lower |
+
+## Credits
+
+- [Wazuh](https://wazuh.com/) — Open-source SIEM/XDR
+- [OpenCTI](https://www.opencti.io/) — Open-source Cyber Threat Intelligence platform
+- [Shuffle](https://shuffler.io/) — Open-source SOAR
+- [misje/wazuh-opencti](https://github.com/misje/wazuh-opencti) — Wazuh-OpenCTI integration scripts
+- [misje/opencti-wazuh-connector](https://github.com/misje/opencti-wazuh-connector) — OpenCTI enrichment connector for Wazuh
+
+## License
+
+This deployment configuration is provided as-is. Individual components are governed by their respective licenses (GPLv2 for Wazuh, Apache 2.0 for OpenCTI, AGPL for Shuffle).

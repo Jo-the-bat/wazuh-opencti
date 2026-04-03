@@ -29,6 +29,7 @@ generate_wazuh_password() {
 echo "[1/9] Checking prerequisites..."
 command -v docker &>/dev/null || { echo "ERROR: docker not found." >&2; exit 1; }
 docker compose version &>/dev/null || { echo "ERROR: docker compose not found." >&2; exit 1; }
+command -v openssl &>/dev/null || { echo "ERROR: openssl not found." >&2; exit 1; }
 echo "  OK"
 
 # ------------------------------------------
@@ -57,6 +58,12 @@ else
     OPENCTI_ADMIN_TOKEN=$(generate_uuid)
     MINIO_ROOT_PASSWORD=$(generate_password 20)
     RABBITMQ_DEFAULT_PASS=$(generate_password 20)
+    ELASTIC_PASSWORD=$(generate_password 20)
+    REDIS_PASSWORD=$(generate_password 20)
+    OPENCTI_HEALTH_KEY=$(generate_password 16)
+    SHUFFLE_DEFAULT_PASSWORD=$(generate_password 20)
+    SHUFFLE_DEFAULT_APIKEY=$(generate_uuid)
+    SHUFFLE_ENCRYPTION_MODIFIER=$(generate_password 32)
 
     cat > .env << ENVEOF
 # ==========================================
@@ -65,7 +72,7 @@ else
 
 # --- Wazuh ---
 WAZUH_VERSION=4.14.4
-WAZUH_CERTS_GENERATOR_VERSION=0.0.4
+WAZUH_CERTS_GENERATOR_VERSION=0.0.2
 WAZUH_INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD}
 WAZUH_API_PASSWORD=${WAZUH_API_PASSWORD}
 WAZUH_DASHBOARD_PASSWORD=${WAZUH_DASHBOARD_PASSWORD}
@@ -77,13 +84,16 @@ OPENCTI_ADMIN_EMAIL=admin@opencti.io
 OPENCTI_ADMIN_PASSWORD=${OPENCTI_ADMIN_PASSWORD}
 OPENCTI_ADMIN_TOKEN=${OPENCTI_ADMIN_TOKEN}
 OPENCTI_PORT=8443
+OPENCTI_HEALTH_KEY=${OPENCTI_HEALTH_KEY}
 
 # --- Elasticsearch (for OpenCTI) ---
 ELASTICSEARCH_VERSION=8.19.13
-ELASTIC_MEMORY_SIZE=4G
+ELASTIC_MEMORY_SIZE=3G
+ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
 
 # --- Redis ---
 REDIS_VERSION=7.4
+REDIS_PASSWORD=${REDIS_PASSWORD}
 
 # --- RabbitMQ ---
 RABBITMQ_VERSION=4.2.5-management
@@ -121,8 +131,20 @@ CONNECTOR_WAZUH_ID=$(generate_uuid)
 #CVE_API_KEY=
 #CONNECTOR_CVE_ID=$(generate_uuid)
 
+# --- Shuffle SOAR ---
+SHUFFLE_VERSION=latest
+SHUFFLE_OPENSEARCH_VERSION=2.14.0
+SHUFFLE_DEFAULT_USERNAME=admin
+SHUFFLE_DEFAULT_PASSWORD=${SHUFFLE_DEFAULT_PASSWORD}
+SHUFFLE_DEFAULT_APIKEY=${SHUFFLE_DEFAULT_APIKEY}
+SHUFFLE_ENCRYPTION_MODIFIER=${SHUFFLE_ENCRYPTION_MODIFIER}
+SHUFFLE_PORT=3443
+
 # --- SMTP (optional) ---
-SMTP_HOSTNAME=localhost
+SMTP_HOSTNAME=localhost  # Change to real SMTP server for email alerts
+
+# --- Nginx hostname (used for self-signed cert CN and SAN) ---
+OPENCTI_HOSTNAME=localhost
 ENVEOF
     echo "  Generated with random passwords and UUIDs."
 fi
@@ -144,9 +166,9 @@ ADMIN_HASH=$(generate_hash "$WAZUH_INDEXER_PASSWORD")
 DASHBOARD_HASH=$(generate_hash "$WAZUH_DASHBOARD_PASSWORD")
 
 if [ -z "$ADMIN_HASH" ] || [ -z "$DASHBOARD_HASH" ]; then
-    echo "  WARNING: Hash generation failed, using default passwords."
-    ADMIN_HASH='$2y$12$K/SpwjtB.wOHJ/Nc6GVRDuc1h0rM1DfvziFRNPtk27P.c4yDr9SEO'
-    DASHBOARD_HASH='$2y$12$4AcgAt3xwOWadA5s5blL6ev39OXDNhmOesEoo33eZtrq2N0YrU3H.'
+    echo "  ERROR: Bcrypt hash generation failed." >&2
+    echo "  Ensure Docker can pull wazuh/wazuh-indexer:${WAZUH_VERSION}" >&2
+    exit 1
 fi
 
 # --- internal_users.yml ---
@@ -179,7 +201,8 @@ hosts:
 WYEOF
 
 # --- wazuh_manager.conf (with real OpenCTI token) ---
-cat > config/wazuh_cluster/wazuh_manager.conf << 'WMEOF'
+WAZUH_CLUSTER_KEY=$(openssl rand -hex 16)
+cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
 <ossec_config>
   <global>
     <jsonout_output>yes</jsonout_output>
@@ -268,7 +291,7 @@ cat > config/wazuh_cluster/wazuh_manager.conf << 'WMEOF'
     <name>wazuh</name>
     <node_name>wazuh-manager</node_name>
     <node_type>master</node_type>
-    <key>c98b62a9b6169ac5f67dae55ae4a9088</key>
+    <key>${WAZUH_CLUSTER_KEY}</key>
     <port>1516</port>
     <bind_addr>0.0.0.0</bind_addr>
     <nodes>
@@ -282,6 +305,14 @@ WMEOF
 
 # Append the integration block with the real token (variable substitution)
 cat >> config/wazuh_cluster/wazuh_manager.conf << WMEOF2
+  <!-- Shuffle SOAR: uncomment after creating a webhook workflow in Shuffle -->
+  <!-- <integration>
+    <name>shuffle</name>
+    <hook_url>SHUFFLE_WEBHOOK_URL</hook_url>
+    <level>3</level>
+    <alert_format>json</alert_format>
+  </integration> -->
+
   <integration>
     <name>custom-opencti</name>
     <group>sysmon_eid1_detections,sysmon_eid3_detections,sysmon_eid7_detections,sysmon_eid22_detections,syscheck_file,osquery_file,ids,sysmon_process-anomalies,audit_command</group>
@@ -302,26 +333,29 @@ if [ -f config/wazuh_indexer_ssl_certs/root-ca.pem ]; then
     echo "  Already exist, skipping."
 else
     docker compose -f generate-indexer-certs.yml run --rm generator
-    [ ! -f config/wazuh_indexer_ssl_certs/root-ca-manager.pem ] && \
-        cp config/wazuh_indexer_ssl_certs/root-ca.pem config/wazuh_indexer_ssl_certs/root-ca-manager.pem
     echo "  Done."
 fi
+# Ensure root-ca-manager.pem always exists (needed by Wazuh manager filebeat)
+[ ! -f config/wazuh_indexer_ssl_certs/root-ca-manager.pem ] && \
+    cp config/wazuh_indexer_ssl_certs/root-ca.pem config/wazuh_indexer_ssl_certs/root-ca-manager.pem
 
 # ------------------------------------------
 # 6. Generate Nginx self-signed TLS certificate
 # ------------------------------------------
 echo "[6/9] Generating Nginx TLS certificate..."
+OPENCTI_HOSTNAME="${OPENCTI_HOSTNAME:-localhost}"
 if [ -f config/nginx/ssl/opencti.crt ]; then
     echo "  Already exists, skipping."
 else
+    mkdir -p config/nginx/ssl
     openssl req -x509 -nodes -days 3650 \
         -newkey rsa:2048 \
         -keyout config/nginx/ssl/opencti.key \
         -out config/nginx/ssl/opencti.crt \
-        -subj "/C=US/ST=Local/L=Local/O=OpenCTI/CN=localhost" \
-        -addext "subjectAltName=DNS:localhost,DNS:opencti,IP:127.0.0.1" \
+        -subj "/C=US/ST=Local/L=Local/O=OpenCTI/CN=${OPENCTI_HOSTNAME}" \
+        -addext "subjectAltName=DNS:${OPENCTI_HOSTNAME},DNS:opencti,IP:127.0.0.1" \
         2>/dev/null
-    echo "  Done."
+    echo "  Done (CN=${OPENCTI_HOSTNAME})."
 fi
 
 # ------------------------------------------
@@ -336,23 +370,34 @@ echo "  Done."
 # 8. Start services
 # ------------------------------------------
 echo "[8/9] Starting services..."
-docker compose up -d
+if ! docker compose up -d; then
+    echo "  ERROR: docker compose up failed." >&2
+    exit 1
+fi
 echo "  Containers started."
 
 # ------------------------------------------
 # 9. Initialize Wazuh indexer security
 # ------------------------------------------
 echo "[9/9] Waiting for Wazuh indexer to initialize..."
+INDEXER_READY=false
 for i in $(seq 1 30); do
     if docker compose exec -T wazuh.indexer bash -c \
         "curl -sku admin:admin https://localhost:9200/_cluster/health" 2>/dev/null | grep -q '"status"'; then
+        INDEXER_READY=true
         break
     fi
     sleep 5
 done
 
+if [ "$INDEXER_READY" != "true" ]; then
+    echo "  ERROR: Wazuh indexer did not become ready within 150 seconds." >&2
+    echo "  Check logs: docker compose logs wazuh.indexer" >&2
+    exit 1
+fi
+
 echo "  Running security admin..."
-docker compose exec -T wazuh.indexer bash -c '
+if ! docker compose exec -T wazuh.indexer bash -c '
 export JAVA_HOME=/usr/share/wazuh-indexer/jdk
 bash /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh \
     -cd /usr/share/wazuh-indexer/opensearch-security/ \
@@ -361,7 +406,11 @@ bash /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh
     -cert /usr/share/wazuh-indexer/certs/admin.pem \
     -key /usr/share/wazuh-indexer/certs/admin-key.pem \
     -icl -h wazuh.indexer
-' 2>&1 | tail -3
+' 2>&1 | tail -5; then
+    echo "  ERROR: Security admin initialization failed." >&2
+    echo "  Check logs: docker compose logs wazuh.indexer" >&2
+    exit 1
+fi
 
 # Restart manager and dashboard to pick up new indexer credentials
 docker compose restart wazuh.manager wazuh.dashboard 2>&1 | tail -2
@@ -389,5 +438,18 @@ echo "    docker compose --profile alienvault up -d"
 echo "    docker compose --profile abuseipdb up -d"
 echo "    docker compose --profile cve up -d"
 echo
+echo "  Shuffle SOAR:     https://localhost:${SHUFFLE_PORT:-3443}"
+echo "    Username: ${SHUFFLE_DEFAULT_USERNAME:-admin}"
+echo "    Password: ${SHUFFLE_DEFAULT_PASSWORD}"
+echo "    To connect Wazuh alerts to Shuffle:"
+echo "      1. Create a workflow in Shuffle with a Webhook trigger"
+echo "      2. Copy the webhook URL"
+echo "      3. Uncomment the Shuffle integration in ossec.conf"
+echo "      4. Restart wazuh.manager"
+echo
 echo "  Self-signed certs — browser warnings expected."
+echo "  Set OPENCTI_HOSTNAME in .env for custom CN."
+echo
+echo "  Web proxy: cp proxy.env.example proxy.env"
+echo "    Then edit proxy.env and restart services."
 echo "============================================"

@@ -4,6 +4,17 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "5"
 
+x-proxy-env: &proxy-env
+  - path: proxy.env
+    required: false
+
+x-connector-healthcheck: &connector-healthcheck
+  test: ["CMD-SHELL", "pgrep -f python || exit 1"]
+  interval: 60s
+  timeout: 5s
+  retries: 5
+  start_period: 120s
+
 services:
 
   # ==========================================
@@ -14,11 +25,22 @@ services:
     image: wazuh/wazuh-manager:${WAZUH_VERSION}
     hostname: wazuh.manager
     restart: always
-    logging: *default-logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    env_file: *proxy-env
     deploy:
       resources:
         limits:
           memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sku wazuh-wui:${WAZUH_API_PASSWORD} https://localhost:55000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
     ulimits:
       memlock: { soft: -1, hard: -1 }
       nofile: { soft: 655360, hard: 655360 }
@@ -49,13 +71,13 @@ services:
       - wazuh_wodles:/var/ossec/wodles
       - filebeat_etc:/etc/filebeat
       - filebeat_var:/var/lib/filebeat
-      - ./config/wazuh_indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem
-      - ./config/wazuh_indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem
-      - ./config/wazuh_indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key
-      - ./config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf
-      - ./config/wazuh_integrations/custom-opencti:/var/ossec/integrations/custom-opencti
-      - ./config/wazuh_integrations/custom-opencti.py:/var/ossec/integrations/custom-opencti.py
-      - ./config/wazuh_rules/opencti_rules.xml:/var/ossec/etc/rules/opencti_rules.xml
+      - ./config/wazuh_indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key:ro
+      - ./config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf:ro
+      - ./config/wazuh_integrations/custom-opencti:/var/ossec/integrations/custom-opencti:ro
+      - ./config/wazuh_integrations/custom-opencti.py:/var/ossec/integrations/custom-opencti.py:ro
+      - ./config/wazuh_rules/opencti_rules.xml:/var/ossec/etc/rules/opencti_rules.xml:ro
     networks:
       - wazuh-opencti
     depends_on:
@@ -85,13 +107,13 @@ services:
       start_period: 120s
     volumes:
       - wazuh-indexer-data:/var/lib/wazuh-indexer
-      - ./config/wazuh_indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/config/opensearch.yml
-      - ./config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml
-      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem
-      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/config/certs/indexer-key.pem
-      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/config/certs/indexer.pem
-      - ./config/wazuh_indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem
-      - ./config/wazuh_indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin-key.pem
+      - ./config/wazuh_indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
+      - ./config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml:ro
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/config/certs/indexer-key.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/config/certs/indexer.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin-key.pem:ro
     networks:
       - wazuh-opencti
 
@@ -114,15 +136,23 @@ services:
       DASHBOARD_PASSWORD: ${WAZUH_DASHBOARD_PASSWORD}
       API_USERNAME: wazuh-wui
       API_PASSWORD: ${WAZUH_API_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sfk https://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
     volumes:
-      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem
-      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem
-      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem
-      - ./config/wazuh_dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml
-      - ./config/wazuh_dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml
+      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem:ro
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
+      - ./config/wazuh_dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      - ./config/wazuh_dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
     networks:
       - wazuh-opencti
     depends_on:
+      wazuh.manager:
+        condition: service_healthy
       wazuh.indexer:
         condition: service_healthy
 
@@ -142,10 +172,12 @@ services:
     environment:
       discovery.type: single-node
       xpack.ml.enabled: "false"
-      xpack.security.enabled: "false"
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
       ES_JAVA_OPTS: "-Xms${ELASTIC_MEMORY_SIZE} -Xmx${ELASTIC_MEMORY_SIZE}"
     healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      test: ["CMD-SHELL", "curl -s -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -163,10 +195,13 @@ services:
     hostname: redis
     restart: always
     logging: *default-logging
+    command: redis-server --requirepass ${REDIS_PASSWORD}
     deploy:
       resources:
         limits:
           memory: 1G
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 15s
@@ -235,12 +270,13 @@ services:
     hostname: opencti
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy:
       resources:
         limits:
           memory: 4G
     environment:
-      - NODE_OPTIONS=--max-old-space-size=8096
+      - NODE_OPTIONS=--max-old-space-size=3072
       - APP__PORT=8080
       - APP__BASE_URL=${OPENCTI_BASE_URL}
       - APP__ADMIN__EMAIL=${OPENCTI_ADMIN_EMAIL}
@@ -249,7 +285,10 @@ services:
       - APP__APP_LOGS__LOGS_LEVEL=error
       - REDIS__HOSTNAME=redis
       - REDIS__PORT=6379
+      - REDIS__PASSWORD=${REDIS_PASSWORD}
       - ELASTICSEARCH__URL=http://elasticsearch:9200
+      - ELASTICSEARCH__USERNAME=elastic
+      - ELASTICSEARCH__PASSWORD=${ELASTIC_PASSWORD}
       - MINIO__ENDPOINT=minio
       - MINIO__PORT=9000
       - MINIO__USE_SSL=false
@@ -264,9 +303,10 @@ services:
       - SMTP__HOSTNAME=${SMTP_HOSTNAME}
       - SMTP__PORT=25
       - PROVIDERS__LOCAL__STRATEGY=LocalStrategy
-      - APP__HEALTH_ACCESS_KEY=healthcheck-key
+      - APP__SESSION__IDLE_TIMEOUT=30m
+      - APP__HEALTH_ACCESS_KEY=${OPENCTI_HEALTH_KEY}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- 'http://localhost:8080/health?health_access_key=healthcheck-key' || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- 'http://localhost:8080/health?health_access_key=${OPENCTI_HEALTH_KEY}' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 30
@@ -287,6 +327,7 @@ services:
     image: opencti/worker:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy:
       replicas: 3
       resources:
@@ -296,6 +337,7 @@ services:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - WORKER_LOG_LEVEL=info
+    healthcheck: *connector-healthcheck
     networks:
       - wazuh-opencti
     depends_on:
@@ -310,6 +352,7 @@ services:
     image: opencti/connector-export-file-stix:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -319,6 +362,7 @@ services:
       - CONNECTOR_NAME=ExportFileStix2
       - CONNECTOR_SCOPE=application/json
       - CONNECTOR_LOG_LEVEL=info
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -327,6 +371,7 @@ services:
     image: opencti/connector-export-file-csv:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -336,6 +381,7 @@ services:
       - CONNECTOR_NAME=ExportFileCsv
       - CONNECTOR_SCOPE=text/csv
       - CONNECTOR_LOG_LEVEL=info
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -344,6 +390,7 @@ services:
     image: opencti/connector-import-file-stix:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -354,6 +401,7 @@ services:
       - CONNECTOR_SCOPE=application/json,text/xml
       - CONNECTOR_AUTO=true
       - CONNECTOR_LOG_LEVEL=info
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -362,6 +410,7 @@ services:
     image: opencti/connector-import-document:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -372,6 +421,7 @@ services:
       - CONNECTOR_SCOPE=application/pdf,text/plain,text/csv,text/html
       - CONNECTOR_AUTO=true
       - CONNECTOR_LOG_LEVEL=info
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -384,6 +434,7 @@ services:
     image: opencti/connector-mitre:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -395,6 +446,7 @@ services:
       - CONNECTOR_RUN_AND_TERMINATE=false
       - MITRE_INTERVAL=7
       - MITRE_REMOVE_STATEMENT_MARKING=true
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -403,6 +455,7 @@ services:
     image: opencti/connector-opencti:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -413,6 +466,7 @@ services:
       - CONNECTOR_LOG_LEVEL=info
       - CONNECTOR_RUN_AND_TERMINATE=false
       - CONFIG_INTERVAL=7
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -421,6 +475,7 @@ services:
     image: opencti/connector-urlhaus:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -433,6 +488,7 @@ services:
       - URLHAUS_IMPORT_OFFLINE=true
       - URLHAUS_THREATS_FROM_LABELS=true
       - URLHAUS_INTERVAL=3
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -441,6 +497,7 @@ services:
     image: opencti/connector-cisa-known-exploited-vulnerabilities:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -454,6 +511,7 @@ services:
       - CISA_CREATE_INFRASTRUCTURES=false
       - CISA_TLP=TLP:CLEAR
       - CISA_INTERVAL=7
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -462,6 +520,7 @@ services:
     image: opencti/connector-threatfox:${OPENCTI_VERSION}
     restart: always
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -474,6 +533,7 @@ services:
       - THREATFOX_CSV_URL=https://threatfox.abuse.ch/export/json/recent/
       - THREATFOX_IMPORT_OFFLINE=true
       - THREATFOX_INTERVAL=3
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -488,6 +548,7 @@ services:
     restart: always
     profiles: ["alienvault"]
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -508,6 +569,7 @@ services:
       - ALIENVAULT_EXCLUDED_PULSE_INDICATOR_TYPES=FileHash-MD5,FileHash-SHA1
       - ALIENVAULT_ENABLE_RELATIONSHIPS=true
       - CONNECTOR_DURATION_PERIOD=PT6H
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -517,6 +579,7 @@ services:
     restart: always
     profiles: ["abuseipdb"]
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -529,6 +592,7 @@ services:
       - ABUSEIPDB_SCORE=80
       - ABUSEIPDB_LIMIT=500000
       - CONNECTOR_DURATION_PERIOD=PT12H
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -538,6 +602,7 @@ services:
     restart: always
     profiles: ["cve"]
     logging: *default-logging
+    env_file: *proxy-env
     deploy: { resources: { limits: { memory: 512M } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
@@ -552,6 +617,7 @@ services:
       - CVE_MAX_DATE_RANGE=120
       - CVE_MAINTAIN_DATA=true
       - CVE_PULL_HISTORY=false
+    healthcheck: *connector-healthcheck
     networks: [wazuh-opencti]
     depends_on:
       opencti: { condition: service_healthy }
@@ -580,7 +646,11 @@ services:
       - WAZUH_OPENSEARCH_URL=https://wazuh.indexer:9200
       - WAZUH_OPENSEARCH_USERNAME=admin
       - WAZUH_OPENSEARCH_PASSWORD=${WAZUH_INDEXER_PASSWORD}
-      - WAZUH_OPENSEARCH_VERIFY_TLS=false
+      - WAZUH_OPENSEARCH_VERIFY_TLS=true
+      - REQUESTS_CA_BUNDLE=/etc/ssl/root-ca.pem
+    healthcheck: *connector-healthcheck
+    volumes:
+      - ./config/wazuh_indexer_ssl_certs/root-ca.pem:/etc/ssl/root-ca.pem:ro
     networks:
       - wazuh-opencti
     depends_on:
@@ -590,17 +660,150 @@ services:
         condition: service_healthy
 
   # ==========================================
+  # SHUFFLE SOAR
+  # ==========================================
+
+  shuffle-opensearch:
+    image: opensearchproject/opensearch:${SHUFFLE_OPENSEARCH_VERSION}
+    hostname: shuffle-opensearch
+    restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    environment:
+      - cluster.name=shuffle-cluster
+      - node.name=shuffle-opensearch
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - bootstrap.memory_lock=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    volumes:
+      - shuffle-opensearch-data:/usr/share/opensearch/data
+    networks:
+      - wazuh-opencti
+
+  shuffle-backend:
+    image: ghcr.io/shuffle/shuffle-backend:${SHUFFLE_VERSION}
+    hostname: shuffle-backend
+    restart: always
+    logging: *default-logging
+    env_file: *proxy-env
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    environment:
+      - SHUFFLE_APP_SDK_VERSION=${SHUFFLE_VERSION}
+      - SHUFFLE_WORKER_VERSION=${SHUFFLE_VERSION}
+      - SHUFFLE_OPENSEARCH_URL=http://shuffle-opensearch:9200
+      - SHUFFLE_DEFAULT_USERNAME=${SHUFFLE_DEFAULT_USERNAME}
+      - SHUFFLE_DEFAULT_PASSWORD=${SHUFFLE_DEFAULT_PASSWORD}
+      - SHUFFLE_DEFAULT_APIKEY=${SHUFFLE_DEFAULT_APIKEY}
+      - SHUFFLE_ENCRYPTION_MODIFIER=${SHUFFLE_ENCRYPTION_MODIFIER}
+      - BACKEND_HOSTNAME=shuffle-backend
+      - BACKEND_PORT=5001
+      - SHUFFLE_ORBORUS_EXECUTION_TIMEOUT=600
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5001/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    volumes:
+      - shuffle-files:/shuffle-files
+      # Docker socket needed to manage apps (required by Shuffle)
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - wazuh-opencti
+    depends_on:
+      shuffle-opensearch:
+        condition: service_healthy
+
+  shuffle-frontend:
+    image: ghcr.io/shuffle/shuffle-frontend:${SHUFFLE_VERSION}
+    hostname: shuffle-frontend
+    restart: always
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    environment:
+      - BACKEND_HOSTNAME=shuffle-backend
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - wazuh-opencti
+    depends_on:
+      shuffle-backend:
+        condition: service_healthy
+
+  shuffle-orborus:
+    image: ghcr.io/shuffle/shuffle-orborus:${SHUFFLE_VERSION}
+    hostname: shuffle-orborus
+    restart: always
+    logging: *default-logging
+    env_file: *proxy-env
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    environment:
+      - SHUFFLE_APP_SDK_VERSION=${SHUFFLE_VERSION}
+      - SHUFFLE_WORKER_VERSION=${SHUFFLE_VERSION}
+      - BASE_URL=http://shuffle-backend:5001
+      - SHUFFLE_BASE_URL=http://shuffle-backend:5001
+      - DOCKER_API_VERSION=1.40
+      - SHUFFLE_ORBORUS_EXECUTION_TIMEOUT=600
+      - SHUFFLE_ORBORUS_EXECUTION_CONCURRENCY=5
+      - CLEANUP=true
+      - RUNNING_MODE=docker
+      - SHUFFLE_WORKER_IMAGE=ghcr.io/shuffle/shuffle-worker:${SHUFFLE_VERSION}
+      - SHUFFLE_SWARM_NETWORK_NAME=wazuh-opencti
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f orborus || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    # Docker socket required for orborus to spawn workflow worker containers
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - wazuh-opencti
+    depends_on:
+      shuffle-backend:
+        condition: service_healthy
+
+  # ==========================================
   # NGINX HTTPS REVERSE PROXY
   # ==========================================
 
   nginx:
-    image: nginx:stable-alpine
+    image: nginx:1.28-alpine
     hostname: nginx
     restart: always
     logging: *default-logging
     deploy: { resources: { limits: { memory: 256M } } }
     ports:
       - "${OPENCTI_PORT:-8443}:8443"
+      - "${SHUFFLE_PORT:-3443}:3443"
     healthcheck:
       test: ["CMD-SHELL", "curl -sfk https://localhost:8443 || exit 1"]
       interval: 30s
@@ -609,16 +812,20 @@ services:
       start_period: 15s
     volumes:
       - ./config/nginx/opencti.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./config/nginx/shuffle.conf:/etc/nginx/conf.d/shuffle.conf:ro
       - ./config/nginx/ssl:/etc/nginx/ssl:ro
     networks:
       - wazuh-opencti
     depends_on:
       opencti:
         condition: service_healthy
+      shuffle-frontend:
+        condition: service_healthy
 
 networks:
   wazuh-opencti:
     driver: bridge
+    name: wazuh-opencti
 
 volumes:
   wazuh_api_configuration:
@@ -637,3 +844,5 @@ volumes:
   s3data:
   redisdata:
   amqpdata:
+  shuffle-opensearch-data:
+  shuffle-files:
