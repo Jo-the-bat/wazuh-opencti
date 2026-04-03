@@ -117,6 +117,8 @@ CONNECTOR_OPENCTI_DATASETS_ID=$(generate_uuid)
 CONNECTOR_URLHAUS_ID=$(generate_uuid)
 CONNECTOR_CISA_KEV_ID=$(generate_uuid)
 CONNECTOR_THREATFOX_ID=$(generate_uuid)
+CONNECTOR_VXVAULT_ID=$(generate_uuid)
+CONNECTOR_DISARM_ID=$(generate_uuid)
 
 # --- Wazuh-OpenCTI Integration ---
 WAZUH_CONNECTOR_VERSION=0.3.0
@@ -139,6 +141,12 @@ SHUFFLE_DEFAULT_PASSWORD=${SHUFFLE_DEFAULT_PASSWORD}
 SHUFFLE_DEFAULT_APIKEY=${SHUFFLE_DEFAULT_APIKEY}
 SHUFFLE_ENCRYPTION_MODIFIER=${SHUFFLE_ENCRYPTION_MODIFIER}
 SHUFFLE_PORT=3443
+
+# --- Monitoring (optional, activate with: docker compose --profile monitoring up -d) ---
+PROMETHEUS_VERSION=v3.11.0
+CADVISOR_VERSION=v0.56.2
+GRAFANA_VERSION=12.4.2
+GRAFANA_ADMIN_PASSWORD=$(generate_password 16)
 
 # --- SMTP (optional) ---
 SMTP_HOSTNAME=localhost  # Change to real SMTP server for email alerts

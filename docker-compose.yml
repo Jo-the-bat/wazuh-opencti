@@ -538,6 +538,48 @@ services:
     depends_on:
       opencti: { condition: service_healthy }
 
+  connector-vxvault:
+    image: opencti/connector-vxvault:${OPENCTI_VERSION}
+    restart: always
+    logging: *default-logging
+    env_file: *proxy-env
+    deploy: { resources: { limits: { memory: 512M } } }
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=${CONNECTOR_VXVAULT_ID}
+      - CONNECTOR_NAME=VX Vault
+      - CONNECTOR_SCOPE=vxvault
+      - CONNECTOR_LOG_LEVEL=info
+      - VXVAULT_URL=https://vxvault.net/URL_List.php
+      - VXVAULT_CREATE_INDICATORS=true
+      - VXVAULT_INTERVAL=3
+    healthcheck: *connector-healthcheck
+    networks: [wazuh-opencti]
+    depends_on:
+      opencti: { condition: service_healthy }
+
+  connector-disarm:
+    image: opencti/connector-disarm-framework:${OPENCTI_VERSION}
+    restart: always
+    logging: *default-logging
+    env_file: *proxy-env
+    deploy: { resources: { limits: { memory: 512M } } }
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=${CONNECTOR_DISARM_ID}
+      - CONNECTOR_NAME=DISARM Framework
+      - CONNECTOR_SCOPE=marking-definition,identity,attack-pattern,course-of-action
+      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_RUN_AND_TERMINATE=false
+      - DISARM_FRAMEWORK_URL=https://raw.githubusercontent.com/DISARMFoundation/DISARMframeworks/main/generated_files/DISARM_STIX/DISARM.json
+      - DISARM_FRAMEWORK_INTERVAL=7
+    healthcheck: *connector-healthcheck
+    networks: [wazuh-opencti]
+    depends_on:
+      opencti: { condition: service_healthy }
+
   # ==========================================
   # OPTIONAL CONNECTORS (require API keys)
   # Activate with: docker compose --profile <name> up -d
@@ -792,6 +834,82 @@ services:
         condition: service_healthy
 
   # ==========================================
+  # MONITORING (optional)
+  # Activate with: docker compose --profile monitoring up -d
+  # ==========================================
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION}
+    hostname: prometheus
+    restart: always
+    profiles: ["monitoring"]
+    logging: *default-logging
+    deploy: { resources: { limits: { memory: 1G } } }
+    command: --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.retention.time=30d
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    volumes:
+      - ./config/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - wazuh-opencti
+    depends_on:
+      cadvisor:
+        condition: service_healthy
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:${CADVISOR_VERSION}
+    hostname: cadvisor
+    restart: always
+    profiles: ["monitoring"]
+    logging: *default-logging
+    deploy: { resources: { limits: { memory: 512M } } }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - wazuh-opencti
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    hostname: grafana
+    restart: always
+    profiles: ["monitoring"]
+    logging: *default-logging
+    deploy: { resources: { limits: { memory: 512M } } }
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_SERVER_ROOT_URL=https://localhost:4443
+      - GF_INSTALL_PLUGINS=grafana-clock-panel
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - wazuh-opencti
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  # ==========================================
   # NGINX HTTPS REVERSE PROXY
   # ==========================================
 
@@ -804,6 +922,7 @@ services:
     ports:
       - "${OPENCTI_PORT:-8443}:8443"
       - "${SHUFFLE_PORT:-3443}:3443"
+      - "${GRAFANA_PORT:-4443}:4443"
     healthcheck:
       test: ["CMD-SHELL", "curl -sfk https://localhost:8443 || exit 1"]
       interval: 30s
@@ -813,6 +932,7 @@ services:
     volumes:
       - ./config/nginx/opencti.conf:/etc/nginx/conf.d/default.conf:ro
       - ./config/nginx/shuffle.conf:/etc/nginx/conf.d/shuffle.conf:ro
+      - ./config/nginx/grafana.conf:/etc/nginx/conf.d/grafana.conf:ro
       - ./config/nginx/ssl:/etc/nginx/ssl:ro
     networks:
       - wazuh-opencti
@@ -846,3 +966,5 @@ volumes:
   amqpdata:
   shuffle-opensearch-data:
   shuffle-files:
+  prometheus-data:
+  grafana-data:

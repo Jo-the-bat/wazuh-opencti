@@ -80,10 +80,12 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}/config/nginx/opencti.conf:/etc/nginx/conf.d/default.conf:ro \
             -v ${{ github.workspace }}/config/nginx/shuffle.conf:/etc/nginx/conf.d/shuffle.conf:ro \
+            -v ${{ github.workspace }}/config/nginx/grafana.conf:/etc/nginx/conf.d/grafana.conf:ro \
             -v ${{ github.workspace }}/config/nginx/ssl:/etc/nginx/ssl:ro \
             --add-host opencti:127.0.0.1 \
             --add-host shuffle-frontend:127.0.0.1 \
             --add-host shuffle-backend:127.0.0.1 \
+            --add-host grafana:127.0.0.1 \
             nginx:1.28-alpine nginx -t
 
   compose-validate:
@@ -125,6 +127,8 @@ jobs:
           CONNECTOR_URLHAUS_ID=00000000-0000-0000-0000-000000000008
           CONNECTOR_CISA_KEV_ID=00000000-0000-0000-0000-000000000009
           CONNECTOR_THREATFOX_ID=00000000-0000-0000-0000-000000000010
+          CONNECTOR_VXVAULT_ID=00000000-0000-0000-0000-000000000013
+          CONNECTOR_DISARM_ID=00000000-0000-0000-0000-000000000014
           WAZUH_CONNECTOR_VERSION=0.3.0
           CONNECTOR_WAZUH_ID=00000000-0000-0000-0000-000000000011
           SHUFFLE_VERSION=v2.2.0
@@ -134,6 +138,11 @@ jobs:
           SHUFFLE_DEFAULT_APIKEY=00000000-0000-0000-0000-000000000012
           SHUFFLE_ENCRYPTION_MODIFIER=CiTestEncryptionModifier12345678
           SHUFFLE_PORT=3443
+          PROMETHEUS_VERSION=v3.11.0
+          CADVISOR_VERSION=v0.56.2
+          GRAFANA_VERSION=12.4.2
+          GRAFANA_ADMIN_PASSWORD=CiTestPassword1
+          GRAFANA_PORT=4443
           SMTP_HOSTNAME=localhost
           OPENCTI_HOSTNAME=localhost
           EOF
@@ -151,11 +160,11 @@ jobs:
       - name: Verify service count
         run: |
           BASE=$(docker compose config --services | wc -l)
-          ALL=$(docker compose --profile alienvault --profile abuseipdb --profile cve config --services | wc -l)
-          echo "Base services: ${BASE} (expected 24)"
-          echo "All services:  ${ALL} (expected 27)"
-          [ "$BASE" -eq 24 ] || { echo "FAIL: expected 24 base services"; exit 1; }
-          [ "$ALL" -eq 27 ] || { echo "FAIL: expected 27 total services"; exit 1; }
+          ALL=$(docker compose --profile alienvault --profile abuseipdb --profile cve --profile monitoring config --services | wc -l)
+          echo "Base services: ${BASE} (expected 26)"
+          echo "All services:  ${ALL} (expected 32)"
+          [ "$BASE" -eq 26 ] || { echo "FAIL: expected 26 base services, got ${BASE}"; exit 1; }
+          [ "$ALL" -eq 32 ] || { echo "FAIL: expected 32 total services, got ${ALL}"; exit 1; }
 
       - name: Check all env vars are covered
         run: |

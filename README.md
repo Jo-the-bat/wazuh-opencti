@@ -42,7 +42,7 @@ Production-ready Docker Compose deployment of a complete security operations sta
         +-------------+
 ```
 
-**26 containers** (24 default + 3 optional API-key connectors):
+**26 default containers** + 6 optional (3 API-key connectors + 3 monitoring):
 
 | Component | Services | Purpose |
 |-----------|----------|---------|
@@ -135,6 +135,8 @@ Example workflow: Wazuh alert -> extract IOC -> query OpenCTI -> if malicious ->
 | URLhaus | Malicious URLs | 3 days |
 | CISA KEV | Known exploited vulnerabilities | 7 days |
 | ThreatFox | IOCs (IPs, domains, hashes) | 3 days |
+| VX Vault | Malware hosting URLs | 3 days |
+| DISARM Framework | Disinformation techniques and tactics | 7 days |
 
 ### Optional (require API keys)
 
@@ -149,6 +151,65 @@ docker compose --profile abuseipdb up -d
 
 # NVD/CVE (free key at https://nvd.nist.gov/developers/request-an-api-key)
 docker compose --profile cve up -d
+```
+
+## Monitoring (optional)
+
+Enable Grafana + Prometheus + cAdvisor for container metrics:
+
+```bash
+docker compose --profile monitoring up -d
+```
+
+| Service | URL | Default Credentials |
+|---------|-----|-------------------|
+| Grafana | `https://localhost:4443` | admin / (from `.env`) |
+
+Prometheus auto-discovers container metrics via cAdvisor. Import dashboard [193](https://grafana.com/grafana/dashboards/193-docker-monitoring/) in Grafana for pre-built Docker visualizations.
+
+## Wazuh Agent Enrollment
+
+### Linux
+
+```bash
+curl -so wazuh-agent.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.14.4-1_amd64.deb
+sudo WAZUH_MANAGER='<your-server-ip>' WAZUH_REGISTRATION_SERVER='<your-server-ip>' dpkg -i wazuh-agent.deb
+sudo systemctl enable --now wazuh-agent
+```
+
+### Windows (PowerShell as admin)
+
+```powershell
+Invoke-WebRequest -Uri https://packages.wazuh.com/4.x/windows/wazuh-agent-4.14.4-1.msi -OutFile wazuh-agent.msi
+msiexec.exe /i wazuh-agent.msi /q WAZUH_MANAGER='<your-server-ip>' WAZUH_REGISTRATION_SERVER='<your-server-ip>'
+net start Wazuh
+```
+
+Replace `<your-server-ip>` with the host running this stack. Agents connect on ports 1514 (events) and 1515 (enrollment).
+
+## Let's Encrypt Certificates
+
+To replace self-signed certs with Let's Encrypt:
+
+```bash
+# Install certbot
+sudo apt install certbot
+
+# Generate cert (requires port 80 temporarily open)
+sudo certbot certonly --standalone -d your-domain.com
+
+# Copy to nginx ssl dir
+sudo cp /etc/letsencrypt/live/your-domain.com/fullchain.pem config/nginx/ssl/opencti.crt
+sudo cp /etc/letsencrypt/live/your-domain.com/privkey.pem config/nginx/ssl/opencti.key
+
+# Update hostname and restart
+sed -i 's/OPENCTI_HOSTNAME=.*/OPENCTI_HOSTNAME=your-domain.com/' .env
+docker compose restart nginx
+```
+
+Set up auto-renewal via cron:
+```bash
+0 3 * * * certbot renew --deploy-hook "cd /path/to/wazuh-opencti && cp /etc/letsencrypt/live/your-domain.com/fullchain.pem config/nginx/ssl/opencti.crt && cp /etc/letsencrypt/live/your-domain.com/privkey.pem config/nginx/ssl/opencti.key && docker compose restart nginx"
 ```
 
 ## Web Proxy Support
@@ -371,9 +432,10 @@ Requests exceeding the limit receive HTTP 429 (Too Many Requests).
 | Shuffle Backend | 2 GB | |
 | Shuffle Frontend | 512 MB | |
 | Shuffle Orborus | 512 MB | |
-| Connectors (x9) | 4.5 GB | 512 MB each |
+| Connectors (x11) | 5.5 GB | 512 MB each |
 | Nginx | 256 MB | |
-| **Total** | **~33 GB** | Actual usage is typically lower |
+| **Total** | **~34 GB** | Actual usage is typically lower |
+| *+ Monitoring* | *+2 GB* | *Prometheus 1G, Grafana 512M, cAdvisor 512M* |
 
 ## Credits
 

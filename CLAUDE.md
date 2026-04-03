@@ -4,13 +4,13 @@
 
 Docker Compose deployment of **Wazuh** (SIEM/XDR) + **OpenCTI** (Cyber Threat Intelligence) with HTTPS, bidirectional threat intel integration, and automated threat feed ingestion.
 
-## Architecture (26 containers)
+## Architecture (26 default + 6 optional containers)
 
 - **Wazuh Stack**: manager (4.14.4), indexer (OpenSearch), dashboard — mutual TLS
 - **OpenCTI Stack**: platform (6.9.28), 3 workers, Elasticsearch 8.19.13, Redis, RabbitMQ 4.2.5, MinIO
 - **Shuffle SOAR**: backend, frontend, orborus (workflow executor), dedicated OpenSearch
 - **Internal Connectors**: STIX/CSV export, STIX/document import
-- **Threat Intel Connectors** (free, no API key): MITRE ATT&CK, OpenCTI Datasets, URLhaus, CISA KEV, ThreatFox
+- **Threat Intel Connectors** (free, no API key): MITRE ATT&CK, OpenCTI Datasets, URLhaus, CISA KEV, ThreatFox, VX Vault, DISARM Framework
 - **Optional Connectors** (require API keys, via profiles): AlienVault OTX, AbuseIPDB, CVE/NVD
 - **Wazuh-OpenCTI Integration**: bidirectional enrichment connector
 - **Nginx**: HTTPS reverse proxy for OpenCTI (port 8443) and Shuffle (port 3443)
