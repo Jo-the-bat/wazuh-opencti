@@ -285,6 +285,7 @@ cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
 
   <ruleset>
     <decoder_dir>ruleset/decoders</decoder_dir>
+    <decoder_dir>etc/decoders</decoder_dir>
     <rule_dir>ruleset/rules</rule_dir>
     <rule_dir>etc/rules</rule_dir>
     <list>etc/lists/audit-keys</list>
@@ -333,7 +334,15 @@ cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
     <timeout>3600</timeout>
   </active-response>
 
-  <!-- Block source IP for 30 minutes on high-severity IDS alerts (level 10+) -->
+  <!-- Block source IP for 1 hour on Stormshield brute force detection -->
+  <active-response>
+    <command>firewall-drop</command>
+    <location>local</location>
+    <rules_id>103009</rules_id>
+    <timeout>3600</timeout>
+  </active-response>
+
+  <!-- Block source IP for 30 minutes on high-severity IDS/firewall alerts (level 10+) -->
   <active-response>
     <command>firewall-drop</command>
     <location>local</location>

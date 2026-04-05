@@ -87,6 +87,8 @@ services:
       - ./config/wazuh_integrations/custom-opencti:/var/ossec/integrations/custom-opencti:ro
       - ./config/wazuh_integrations/custom-opencti.py:/var/ossec/integrations/custom-opencti.py:ro
       - ./config/wazuh_rules/opencti_rules.xml:/var/ossec/etc/rules/opencti_rules.xml:ro
+      - ./config/wazuh_rules/stormshield_rules.xml:/var/ossec/etc/rules/stormshield_rules.xml:ro
+      - ./config/wazuh_decoders/stormshield_decoders.xml:/var/ossec/etc/decoders/stormshield_decoders.xml:ro
     networks:
       - wazuh-opencti
     depends_on:
