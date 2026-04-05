@@ -382,8 +382,9 @@ fi
 # 7. Fix permissions
 # ------------------------------------------
 echo "[7/9] Fixing permissions..."
-chmod -R 660 config/wazuh_indexer_ssl_certs/ 2>/dev/null || true
-chmod 770 config/wazuh_indexer_ssl_certs/ 2>/dev/null || true
+# Certs must be world-readable (644/755) because containers run as different UIDs
+chmod 755 config/wazuh_indexer_ssl_certs/ 2>/dev/null || true
+chmod 644 config/wazuh_indexer_ssl_certs/* 2>/dev/null || true
 # Integration scripts must be world-readable+executable because wazuh-integratord
 # runs as UID 999 (wazuh) but bind-mounted files are owned by host UID
 chmod 755 config/wazuh_integrations/custom-opencti config/wazuh_integrations/custom-opencti.py 2>/dev/null || true
