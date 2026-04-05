@@ -341,8 +341,11 @@ cat >> config/wazuh_cluster/wazuh_manager.conf << WMEOF2
 </ossec_config>
 WMEOF2
 
-# Restrict permissions on config files containing secrets
-chmod 600 config/wazuh_indexer/internal_users.yml \
+# Config files are bind-mounted :ro into containers running as various UIDs,
+# so they need to be world-readable (644). Host-level access is controlled
+# by the parent directory and the Docker socket group.
+# Only .env (plaintext passwords, not bind-mounted) stays at 600.
+chmod 644 config/wazuh_indexer/internal_users.yml \
           config/wazuh_dashboard/wazuh.yml \
           config/wazuh_cluster/wazuh_manager.conf 2>/dev/null || true
 echo "  Config files generated."
@@ -410,15 +413,10 @@ echo "  Containers started."
 # ------------------------------------------
 echo "[9/9] Waiting for Wazuh indexer to initialize..."
 INDEXER_READY=false
-for i in $(seq 1 30); do
-    # Try custom password first (security may auto-initialize from bind-mounted internal_users.yml),
-    # then fall back to default admin:admin for pre-initialization state
+for i in $(seq 1 60); do
+    # Wait for the indexer HTTPS port to respond (security may not be initialized yet)
     if docker compose exec -T wazuh.indexer bash -c \
-        "curl -sku admin:${WAZUH_INDEXER_PASSWORD} https://localhost:9200/_cluster/health" 2>/dev/null | grep -q '"status"'; then
-        INDEXER_READY=true
-        break
-    elif docker compose exec -T wazuh.indexer bash -c \
-        "curl -sku admin:admin https://localhost:9200/_cluster/health" 2>/dev/null | grep -q '"status"'; then
+        "curl -sko /dev/null https://localhost:9200/" 2>/dev/null; then
         INDEXER_READY=true
         break
     fi
@@ -426,7 +424,7 @@ for i in $(seq 1 30); do
 done
 
 if [ "$INDEXER_READY" != "true" ]; then
-    echo "  ERROR: Wazuh indexer did not become ready within 150 seconds." >&2
+    echo "  ERROR: Wazuh indexer did not become ready within 300 seconds." >&2
     echo "  Check logs: docker compose logs wazuh.indexer" >&2
     exit 1
 fi
