@@ -389,7 +389,7 @@ cat >> config/wazuh_cluster/wazuh_manager.conf << WMEOF2
 
   <integration>
     <name>custom-opencti</name>
-    <group>sysmon_eid1_detections,sysmon_eid3_detections,sysmon_eid7_detections,sysmon_eid22_detections,syscheck_file,osquery_file,ids,sysmon_process-anomalies,audit_command</group>
+    <group>sysmon_eid1_detections,sysmon_eid3_detections,sysmon_eid7_detections,sysmon_eid22_detections,syscheck_file,osquery_file,ids,sysmon_process-anomalies,audit_command,fortigate,stormshield,attack</group>
     <alert_format>json</alert_format>
     <api_key>${OPENCTI_ADMIN_TOKEN}</api_key>
     <hook_url>http://opencti:8080/graphql</hook_url>

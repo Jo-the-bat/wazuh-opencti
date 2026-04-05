@@ -336,18 +336,20 @@ def query_opencti(alert, url, token):
             ind_filter = [ind_ip_pattern(filter_values[0])]
             if not ipaddress.ip_address(filter_values[0]).is_global:
                 sys.exit()
-        # Group 'ids' may contain IP addresses.
-        # This may be tailored for suricata, but we'll match against the "ids"
-        # group. These keys are probably used by other decoders as well:
-        elif 'ids' in groups:
+        # Group 'ids' and firewall groups contain IP addresses.
+        # Matches suricata, FortiGate (srcip/dstip), Stormshield (src/dst),
+        # and other network devices forwarding via syslog:
+        elif any(g in groups for g in ['ids', 'fortigate', 'stormshield', 'attack', 'firewall']):
             # If data contains dns, it may contain a DNS query from packetbeat:
             if packetbeat_dns(alert):
                 addrs = filter_packetbeat_dns(alert['data']['dns']['answers']) if 'answers' in alert['data']['dns'] else []
                 filter_values = [alert['data']['dns']['question']['name']] + addrs
                 ind_filter = [f"[domain-name:value = '{escape_stix(filter_values[0])}']", f"[hostname:value = '{escape_stix(filter_values[0])}']"] + list(map(lambda a: ind_ip_pattern(a), addrs))
             else:
-                # Look up either dest or source IP, whichever is public:
-                filter_values = [next(filter(lambda x: x and ipaddress.ip_address(x).is_global, [oneof('dest_ip', 'dstip', within=alert['data']), oneof('src_ip', 'srcip', within=alert['data'])]), None)]
+                # Look up either dest or source IP, whichever is public.
+                # Supports: Suricata (dest_ip/src_ip), FortiGate (dstip/srcip),
+                # Stormshield (dst/src), and generic syslog:
+                filter_values = [next(filter(lambda x: x and ipaddress.ip_address(x).is_global, [oneof('dest_ip', 'dstip', 'dst', within=alert['data']), oneof('src_ip', 'srcip', 'src', within=alert['data'])]), None)]
             if not all(filter_values):
                 sys.exit()
             if not packetbeat_dns(alert):
