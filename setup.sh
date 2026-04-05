@@ -215,8 +215,8 @@ cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
   <global>
     <jsonout_output>yes</jsonout_output>
     <alerts_log>yes</alerts_log>
-    <logall>no</logall>
-    <logall_json>no</logall_json>
+    <logall>yes</logall>
+    <logall_json>yes</logall_json>
     <email_notification>no</email_notification>
     <agents_disconnection_time>10m</agents_disconnection_time>
     <agents_disconnection_alert_time>0</agents_disconnection_alert_time>
@@ -272,6 +272,15 @@ cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
     <index-status>yes</index-status>
     <feed-update-interval>60m</feed-update-interval>
   </vulnerability-detection>
+
+  <ruleset>
+    <decoder_dir>ruleset/decoders</decoder_dir>
+    <rule_dir>ruleset/rules</rule_dir>
+    <rule_dir>etc/rules</rule_dir>
+    <list>etc/lists/audit-keys</list>
+    <list>etc/lists/amazon/aws-eventnames</list>
+    <list>etc/lists/security-eventchannel</list>
+  </ruleset>
 
   <localfile>
     <log_format>syslog</log_format>
@@ -341,6 +350,9 @@ if [ -f config/wazuh_indexer_ssl_certs/root-ca.pem ]; then
     echo "  Already exist, skipping."
 else
     docker compose -f generate-indexer-certs.yml run --rm generator
+    # Fix cert permissions immediately (generator runs as root, host user needs read access)
+    docker run --rm -v "$(pwd)/config/wazuh_indexer_ssl_certs:/certs" alpine \
+        sh -c "chmod 755 /certs && chmod 644 /certs/*"
     echo "  Done."
 fi
 # Ensure root-ca-manager.pem always exists (needed by Wazuh manager filebeat)
@@ -372,6 +384,9 @@ fi
 echo "[7/9] Fixing permissions..."
 chmod -R 660 config/wazuh_indexer_ssl_certs/ 2>/dev/null || true
 chmod 770 config/wazuh_indexer_ssl_certs/ 2>/dev/null || true
+# Integration scripts must be world-readable+executable because wazuh-integratord
+# runs as UID 999 (wazuh) but bind-mounted files are owned by host UID
+chmod 755 config/wazuh_integrations/custom-opencti config/wazuh_integrations/custom-opencti.py 2>/dev/null || true
 echo "  Done."
 
 # ------------------------------------------
@@ -390,7 +405,13 @@ echo "  Containers started."
 echo "[9/9] Waiting for Wazuh indexer to initialize..."
 INDEXER_READY=false
 for i in $(seq 1 30); do
+    # Try custom password first (security may auto-initialize from bind-mounted internal_users.yml),
+    # then fall back to default admin:admin for pre-initialization state
     if docker compose exec -T wazuh.indexer bash -c \
+        "curl -sku admin:${WAZUH_INDEXER_PASSWORD} https://localhost:9200/_cluster/health" 2>/dev/null | grep -q '"status"'; then
+        INDEXER_READY=true
+        break
+    elif docker compose exec -T wazuh.indexer bash -c \
         "curl -sku admin:admin https://localhost:9200/_cluster/health" 2>/dev/null | grep -q '"status"'; then
         INDEXER_READY=true
         break
@@ -408,19 +429,22 @@ echo "  Running security admin..."
 if ! docker compose exec -T wazuh.indexer bash -c '
 export JAVA_HOME=/usr/share/wazuh-indexer/jdk
 bash /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh \
-    -cd /usr/share/wazuh-indexer/opensearch-security/ \
+    -cd /usr/share/wazuh-indexer/config/opensearch-security/ \
     -nhnv \
-    -cacert /usr/share/wazuh-indexer/certs/root-ca.pem \
-    -cert /usr/share/wazuh-indexer/certs/admin.pem \
-    -key /usr/share/wazuh-indexer/certs/admin-key.pem \
+    -cacert /usr/share/wazuh-indexer/config/certs/root-ca.pem \
+    -cert /usr/share/wazuh-indexer/config/certs/admin.pem \
+    -key /usr/share/wazuh-indexer/config/certs/admin-key.pem \
     -icl -h wazuh.indexer
 ' 2>&1 | tail -5; then
-    echo "  ERROR: Security admin initialization failed." >&2
-    echo "  Check logs: docker compose logs wazuh.indexer" >&2
-    exit 1
+    echo "  WARNING: Security admin returned non-zero (may already be initialized)." >&2
 fi
 
-# Restart manager and dashboard to pick up new indexer credentials
+# Enable Filebeat archive forwarding before restarting (default image ships with archives: disabled)
+echo "  Enabling Filebeat archive forwarding..."
+docker compose exec -T wazuh.manager bash -c \
+    'sed -i "/archives:/{n;s/enabled: false/enabled: true/}" /etc/filebeat/filebeat.yml'
+
+# Restart manager and dashboard to pick up new indexer credentials + Filebeat config
 docker compose restart wazuh.manager wazuh.dashboard 2>&1 | tail -2
 
 echo

@@ -338,9 +338,10 @@ def query_opencti(alert, url, token):
             else:
                 # Look up either dest or source IP, whichever is public:
                 filter_values = [next(filter(lambda x: x and ipaddress.ip_address(x).is_global, [oneof('dest_ip', 'dstip', within=alert['data']), oneof('src_ip', 'srcip', within=alert['data'])]), None)]
-                ind_filter = [ind_ip_pattern(filter_values[0])] if filter_values else None
             if not all(filter_values):
                 sys.exit()
+            if not packetbeat_dns(alert):
+                ind_filter = [ind_ip_pattern(filter_values[0])]
         # Look up domain names in DNS queries (sysmon event 22), along with the
         # results (if they're IPv4/IPv6 addresses (A/AAAA records)):
         elif any(True for _ in filter(sysmon_event22_regex.match, groups)):
@@ -644,7 +645,7 @@ def query_opencti(alert, url, token):
     direct_indicators = sorted(
             # Extract the indicator objects (nodes) from the indicator list in
             # the response:
-            list(map(lambda x:x['node'], response['data']['indicators']['edges'])),
+            list(map(lambda x:x['node'], (response['data'].get('indicators') or {}).get('edges', []))),
             key=indicator_sort_func)
     # As opposed to indicators for observables, create an alert for every
     # indicator (limited by max_ind_alerts and the fixed limit in the query
@@ -660,7 +661,7 @@ def query_opencti(alert, url, token):
         add_context(alert, new_alert)
         new_alerts.append(remove_empties(new_alert))
 
-    for edge in response['data']['stixCyberObservables']['edges']:
+    for edge in (response['data'].get('stixCyberObservables') or {}).get('edges', []):
         node = edge['node']
 
         # Create a list of the individual node objects in indicator edges:

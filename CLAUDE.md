@@ -114,6 +114,7 @@ docker compose logs -f <service>                 # Tail logs
 - **depends_on with conditions** — services wait for dependencies to be healthy
 - **Resource limits** via `deploy.resources.limits.memory`; Node.js heap sized to fit container limits
 - **Log rotation** — JSON file driver, 10MB default (50MB for Wazuh manager), 5 files per container
+- **Archive logging** — `logall_json: yes` writes all events to `archives.json`; Filebeat forwards to `wazuh-archives-*` index for forensic analysis
 - **Pinned image versions** — all images use explicit version tags
 - **setup.sh error handling** — `set -euo pipefail`, explicit checks on bcrypt hash generation, docker compose startup, security admin init, and indexer readiness
 
