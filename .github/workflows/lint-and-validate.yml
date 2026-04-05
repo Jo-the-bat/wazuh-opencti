@@ -177,8 +177,8 @@ jobs:
               MISSING=$((MISSING + 1))
             fi
           done
-          # Allow optional vars (API keys, vars with defaults) to be missing
-          [ "$MISSING" -le 7 ] || { echo "FAIL: too many missing env vars (${MISSING})"; exit 1; }
+          # Allow optional vars (API keys, vars with defaults, profile-only services) to be missing
+          [ "$MISSING" -le 8 ] || { echo "FAIL: too many missing env vars (${MISSING})"; exit 1; }
 
   env-generation:
     name: .env generation
