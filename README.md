@@ -42,7 +42,7 @@ Production-ready Docker Compose deployment of a complete security operations sta
         +-------------+
 ```
 
-**26 default containers** + 6 optional (3 API-key connectors + 3 monitoring):
+**26 default containers** + 8 optional (3 API-key connectors + 3 monitoring + 2 Suricata IDS):
 
 | Component | Services | Purpose |
 |-----------|----------|---------|
