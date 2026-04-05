@@ -153,6 +153,45 @@ docker compose --profile abuseipdb up -d
 docker compose --profile cve up -d
 ```
 
+## Network IDS (optional)
+
+Enable Suricata for network traffic analysis — alerts feed directly into Wazuh:
+
+```bash
+docker compose --profile suricata up -d
+```
+
+Suricata monitors host network traffic with `network_mode: host`, detects intrusions, and forwards alerts to Wazuh via syslog. Wazuh IDS rules process Suricata alerts, and the OpenCTI integration enriches matched IPs against threat intel. Active response auto-blocks confirmed threats.
+
+Edit the `SURICATA_OPTIONS` environment variable to change the monitored interface (default: `eth0`).
+
+## Notifications
+
+### Email (SMTP)
+
+Edit `.env` to configure email alerts for level 12+ events:
+
+```bash
+SMTP_HOSTNAME=smtp.example.com
+ALERT_EMAIL_FROM=wazuh@example.com
+ALERT_EMAIL_TO=soc-team@example.com
+```
+
+Then restart the manager: `docker compose restart wazuh.manager`
+
+### Slack
+
+Set `SLACK_WEBHOOK_URL` in `.env` before running `setup.sh`, or add manually to ossec.conf:
+
+```xml
+<integration>
+    <name>slack</name>
+    <hook_url>https://hooks.slack.com/services/YOUR/WEBHOOK/URL</hook_url>
+    <level>10</level>
+    <alert_format>json</alert_format>
+</integration>
+```
+
 ## Monitoring (optional)
 
 Enable Grafana + Prometheus + cAdvisor for container metrics:

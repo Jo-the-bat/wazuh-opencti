@@ -897,6 +897,78 @@ services:
         condition: service_healthy
 
   # ==========================================
+  # NETWORK IDS (optional)
+  # Activate with: docker compose --profile suricata up -d
+  # Monitors host network traffic, feeds alerts to Wazuh
+  # ==========================================
+
+  suricata:
+    image: jasonish/suricata:${SURICATA_VERSION:-7.0.10}
+    hostname: suricata
+    restart: always
+    profiles: ["suricata"]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    network_mode: host
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW, SYS_NICE]
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.00"
+    environment:
+      - SURICATA_OPTIONS=-i eth0 --set outputs.1.eve-log.filename=/var/log/suricata/eve.json
+    volumes:
+      - suricata-logs:/var/log/suricata
+      - suricata-rules:/var/lib/suricata
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f suricata || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # Sidecar: ships Suricata eve.json logs to Wazuh manager via syslog
+  suricata-forwarder:
+    image: alpine:3.21
+    hostname: suricata-forwarder
+    restart: always
+    profiles: ["suricata"]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        apk add --no-cache inotify-tools > /dev/null 2>&1
+        echo "Waiting for eve.json..."
+        while [ ! -f /var/log/suricata/eve.json ]; do sleep 5; done
+        echo "Forwarding Suricata logs to Wazuh..."
+        tail -F /var/log/suricata/eve.json | while read line; do
+          echo "$$line" | nc -w1 -u wazuh.manager 514
+        done
+    volumes:
+      - suricata-logs:/var/log/suricata:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'tail -F' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - wazuh-opencti
+    depends_on:
+      suricata:
+        condition: service_healthy
+
+  # ==========================================
   # MONITORING (optional)
   # Activate with: docker compose --profile monitoring up -d
   # ==========================================
@@ -1041,3 +1113,5 @@ volumes:
   shuffle-files:
   prometheus-data:
   grafana-data:
+  suricata-logs:
+  suricata-rules:

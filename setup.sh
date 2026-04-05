@@ -148,8 +148,14 @@ CADVISOR_VERSION=v0.56.2
 GRAFANA_VERSION=12.4.2
 GRAFANA_ADMIN_PASSWORD=$(generate_password 16)
 
-# --- SMTP (optional) ---
-SMTP_HOSTNAME=localhost  # Change to real SMTP server for email alerts
+# --- Notifications (optional) ---
+SMTP_HOSTNAME=localhost       # Change to real SMTP server for email alerts
+SMTP_PORT=25
+#SMTP_AUTH_USER=             # Uncomment if SMTP requires authentication
+#SMTP_AUTH_PASS=
+ALERT_EMAIL_FROM=wazuh@localhost
+ALERT_EMAIL_TO=soc@localhost  # Change to real SOC team email
+#SLACK_WEBHOOK_URL=           # Uncomment and set for Slack notifications
 
 # --- Nginx hostname (used for self-signed cert CN and SAN) ---
 OPENCTI_HOSTNAME=localhost
@@ -218,7 +224,10 @@ cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
     <alerts_log>yes</alerts_log>
     <logall>yes</logall>
     <logall_json>yes</logall_json>
-    <email_notification>no</email_notification>
+    <email_notification>yes</email_notification>
+    <smtp_server>${SMTP_HOSTNAME}</smtp_server>
+    <email_from>${ALERT_EMAIL_FROM}</email_from>
+    <email_to>${ALERT_EMAIL_TO}</email_to>
     <agents_disconnection_time>10m</agents_disconnection_time>
     <agents_disconnection_alert_time>0</agents_disconnection_alert_time>
   </global>
@@ -378,6 +387,19 @@ cat >> config/wazuh_cluster/wazuh_manager.conf << WMEOF2
   </integration>
 </ossec_config>
 WMEOF2
+
+# Add Slack integration if webhook URL is configured
+if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+    # Insert before </ossec_config>
+    sed -i "/<\/ossec_config>/i\\
+  <integration>\\
+    <name>slack</name>\\
+    <hook_url>${SLACK_WEBHOOK_URL}</hook_url>\\
+    <level>10</level>\\
+    <alert_format>json</alert_format>\\
+  </integration>" config/wazuh_cluster/wazuh_manager.conf
+    echo "  Slack notifications enabled (level 10+)."
+fi
 
 # Config files are bind-mounted :ro into containers running as various UIDs,
 # so they need to be world-readable (644). Host-level access is controlled
