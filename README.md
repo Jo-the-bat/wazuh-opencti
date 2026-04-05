@@ -75,6 +75,12 @@ bash setup.sh
 
 `setup.sh` handles everything: generates random passwords, creates TLS certificates, starts all services, and initializes Wazuh security. It's idempotent — safe to re-run.
 
+Verify the deployment is working:
+
+```bash
+bash scripts/test-deployment.sh
+```
+
 ### Access
 
 | Service | URL | Default Credentials |

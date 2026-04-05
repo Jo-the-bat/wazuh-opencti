@@ -454,6 +454,34 @@ if ! docker compose exec -T wazuh.indexer bash -c \
     exit 1
 fi
 
+# Apply index lifecycle policy (delete old indices to prevent disk exhaustion)
+echo "  Applying index lifecycle policy..."
+docker compose exec -T wazuh.indexer bash -c "
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugins/_ism/policies/wazuh-index-lifecycle' \
+  -H 'Content-Type: application/json' -d '{
+  \"policy\": {
+    \"description\": \"Rotate and delete old Wazuh indices\",
+    \"default_state\": \"open\",
+    \"states\": [
+      {
+        \"name\": \"open\",
+        \"transitions\": [{\"state_name\": \"delete\", \"conditions\": {\"min_index_age\": \"90d\"}}]
+      },
+      {
+        \"name\": \"delete\",
+        \"actions\": [{\"delete\": {}}]
+      }
+    ],
+    \"ism_template\": [
+      {\"index_patterns\": [\"wazuh-alerts-*\"], \"priority\": 100},
+      {\"index_patterns\": [\"wazuh-archives-*\"], \"priority\": 100},
+      {\"index_patterns\": [\"wazuh-monitoring-*\"], \"priority\": 100},
+      {\"index_patterns\": [\"wazuh-statistics-*\"], \"priority\": 100}
+    ]
+  }
+}' 2>/dev/null | grep -q 'policy_id' && echo '  Index lifecycle: 90-day retention applied.' || echo '  WARNING: Could not apply index lifecycle policy.' >&2
+"
+
 # Enable Filebeat archive forwarding before restarting (default image ships with archives: disabled)
 echo "  Enabling Filebeat archive forwarding..."
 docker compose exec -T wazuh.manager bash -c \
