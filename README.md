@@ -101,25 +101,19 @@ Bidirectional enrichment works out of the box:
 
 2. **OpenCTI -> Wazuh**: The `wazuh-connector` enrichment connector searches Wazuh alerts when viewing indicators in OpenCTI, creating STIX sightings.
 
+3. **Active Response**: When an IOC is confirmed by OpenCTI (level 12), Wazuh automatically blocks the source IP via `firewall-drop` for 30 minutes. Also auto-blocks brute-force attackers (1 hour) and high-severity IDS alerts (30 minutes). All blocks auto-expire.
+
 ### Wazuh -> Shuffle (manual setup)
 
 Connect Wazuh alerts to Shuffle for automated response workflows:
 
 1. Log in to Shuffle at `https://localhost:3443`
 2. Create a new workflow with a **Webhook** trigger
-3. Copy the generated webhook URL
-4. Edit `config/wazuh_cluster/wazuh_manager.conf` — uncomment the Shuffle integration block and paste the URL:
-   ```xml
-   <integration>
-       <name>shuffle</name>
-       <hook_url>http://shuffle-backend:5001/api/v1/hooks/YOUR_WEBHOOK_ID</hook_url>
-       <level>3</level>
-       <alert_format>json</alert_format>
-   </integration>
-   ```
-5. Restart the manager:
+3. Save and **Start** the workflow
+4. Copy the generated webhook URL
+5. Run the helper script:
    ```bash
-   docker compose restart wazuh.manager
+   bash scripts/configure-shuffle.sh <webhook-url>
    ```
 
 ### Shuffle <-> OpenCTI

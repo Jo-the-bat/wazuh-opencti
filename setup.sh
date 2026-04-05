@@ -295,6 +295,44 @@ cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
     <session_timeout>15m</session_timeout>
   </rule_test>
 
+  <!-- Active Response: auto-block source IPs on high-severity threats -->
+  <command>
+    <name>firewall-drop</name>
+    <executable>firewall-drop</executable>
+    <timeout_allowed>yes</timeout_allowed>
+  </command>
+
+  <command>
+    <name>host-deny</name>
+    <executable>host-deny</executable>
+    <timeout_allowed>yes</timeout_allowed>
+  </command>
+
+  <!-- Block source IP for 30 minutes when OpenCTI confirms a known IOC (level 12) -->
+  <active-response>
+    <command>firewall-drop</command>
+    <location>local</location>
+    <rules_group>opencti_alert</rules_group>
+    <timeout>1800</timeout>
+  </active-response>
+
+  <!-- Block source IP for 1 hour on repeated authentication failures (brute force) -->
+  <active-response>
+    <command>host-deny</command>
+    <location>local</location>
+    <rules_id>5763</rules_id>
+    <timeout>3600</timeout>
+  </active-response>
+
+  <!-- Block source IP for 30 minutes on high-severity IDS alerts (level 10+) -->
+  <active-response>
+    <command>firewall-drop</command>
+    <location>local</location>
+    <rules_group>ids</rules_group>
+    <level>10</level>
+    <timeout>1800</timeout>
+  </active-response>
+
   <auth>
     <disabled>no</disabled>
     <port>1515</port>

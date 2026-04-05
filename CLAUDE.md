@@ -21,6 +21,8 @@ Docker Compose deployment of **Wazuh** (SIEM/XDR) + **OpenCTI** (Cyber Threat In
 
 2. **OpenCTI → Wazuh** (`ghcr.io/misje/opencti-wazuh-connector:0.3.0`): Enrichment connector searches Wazuh alerts when viewing indicators, creates STIX sightings.
 
+3. **Active Response**: When the OpenCTI integration confirms a known IOC (rules 100212/100213, group `opencti_alert`), `firewall-drop` auto-blocks the source IP for 30 minutes. Also responds to brute-force attacks (rule 5763 → `host-deny` for 1 hour) and high-severity IDS alerts (level 10+ → `firewall-drop` for 30 minutes). All blocks auto-expire.
+
 ## Key Files
 
 ```
