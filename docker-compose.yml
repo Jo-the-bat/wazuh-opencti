@@ -15,6 +15,13 @@ x-connector-healthcheck: &connector-healthcheck
   retries: 5
   start_period: 120s
 
+# ANSSI R8-: drop all capabilities, add back only what's needed
+# ANSSI R12: read-only root filesystem with tmpfs for writable paths
+# CIS 5.25: no-new-privileges prevents privilege escalation inside containers
+x-connector-security: &connector-security
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
 services:
 
   # ==========================================
@@ -31,10 +38,12 @@ services:
         max-size: "50m"
         max-file: "5"
     env_file: *proxy-env
+    security_opt: ["no-new-privileges:true"]
     deploy:
       resources:
         limits:
           memory: 2G
+          cpus: "2.00"
     healthcheck:
       test: ["CMD-SHELL", "curl -sku wazuh-wui:${WAZUH_API_PASSWORD} https://localhost:55000/ || exit 1"]
       interval: 30s
@@ -89,10 +98,14 @@ services:
     hostname: wazuh.indexer
     restart: always
     logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [IPC_LOCK, SETUID, SETGID, DAC_OVERRIDE]
     deploy:
       resources:
         limits:
           memory: 2G
+          cpus: "2.00"
     ulimits:
       memlock: { soft: -1, hard: -1 }
       nofile: { soft: 65536, hard: 65536 }
@@ -122,10 +135,14 @@ services:
     hostname: wazuh.dashboard
     restart: always
     logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
     deploy:
       resources:
         limits:
           memory: 2G
+          cpus: "1.00"
     ports:
       - "9443:5601"
     environment:
@@ -165,10 +182,12 @@ services:
     hostname: elasticsearch
     restart: always
     logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
     deploy:
       resources:
         limits:
           memory: 6G
+          cpus: "2.00"
     environment:
       discovery.type: single-node
       xpack.ml.enabled: "false"
@@ -195,11 +214,15 @@ services:
     hostname: redis
     restart: always
     logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
     command: redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 768mb --maxmemory-policy allkeys-lru
     deploy:
       resources:
         limits:
           memory: 1G
+          cpus: "1.00"
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD}
     healthcheck:
@@ -218,10 +241,12 @@ services:
     hostname: rabbitmq
     restart: always
     logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
     deploy:
       resources:
         limits:
           memory: 2G
+          cpus: "1.00"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
@@ -242,10 +267,13 @@ services:
     hostname: minio
     restart: always
     logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     deploy:
       resources:
         limits:
           memory: 1G
+          cpus: "1.00"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -271,10 +299,13 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     deploy:
       resources:
         limits:
           memory: 4G
+          cpus: "2.00"
     environment:
       - NODE_OPTIONS=--max-old-space-size=3072
       - APP__PORT=8080
@@ -328,11 +359,14 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     deploy:
       replicas: 3
       resources:
         limits:
           memory: 1G
+          cpus: "1.00"
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -353,7 +387,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -372,7 +407,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -391,7 +427,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -411,7 +448,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -435,7 +473,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -456,7 +495,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -476,7 +516,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -498,7 +539,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -521,7 +563,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -543,7 +586,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -564,7 +608,8 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -591,7 +636,8 @@ services:
     profiles: ["alienvault"]
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -622,7 +668,8 @@ services:
     profiles: ["abuseipdb"]
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -645,7 +692,8 @@ services:
     profiles: ["cve"]
     logging: *default-logging
     env_file: *proxy-env
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -672,7 +720,8 @@ services:
     image: ghcr.io/misje/opencti-wazuh-connector:${WAZUH_CONNECTOR_VERSION}
     restart: always
     logging: *default-logging
-    deploy: { resources: { limits: { memory: 512M } } }
+    <<: *connector-security
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
@@ -710,10 +759,12 @@ services:
     hostname: shuffle-opensearch
     restart: always
     logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
     deploy:
       resources:
         limits:
           memory: 2G
+          cpus: "1.00"
     environment:
       - cluster.name=shuffle-cluster
       - node.name=shuffle-opensearch
@@ -742,10 +793,12 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
+    # No cap_drop/no-new-privileges: Shuffle needs Docker socket to manage workflow containers
     deploy:
       resources:
         limits:
           memory: 2G
+          cpus: "1.00"
     environment:
       - SHUFFLE_APP_SDK_VERSION=${SHUFFLE_VERSION}
       - SHUFFLE_WORKER_VERSION=${SHUFFLE_VERSION}
@@ -778,10 +831,14 @@ services:
     hostname: shuffle-frontend
     restart: always
     logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
     deploy:
       resources:
         limits:
           memory: 512M
+          cpus: "0.50"
     environment:
       - BACKEND_HOSTNAME=shuffle-backend
     healthcheck:
@@ -802,10 +859,12 @@ services:
     restart: always
     logging: *default-logging
     env_file: *proxy-env
+    # No cap_drop/no-new-privileges: orborus needs Docker socket to spawn workers
     deploy:
       resources:
         limits:
           memory: 512M
+          cpus: "0.50"
     environment:
       - SHUFFLE_APP_SDK_VERSION=${SHUFFLE_VERSION}
       - SHUFFLE_WORKER_VERSION=${SHUFFLE_VERSION}
@@ -844,7 +903,9 @@ services:
     restart: always
     profiles: ["monitoring"]
     logging: *default-logging
-    deploy: { resources: { limits: { memory: 1G } } }
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    deploy: { resources: { limits: { memory: 1G, cpus: "0.50" } } }
     command: --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.retention.time=30d
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
@@ -867,7 +928,7 @@ services:
     restart: always
     profiles: ["monitoring"]
     logging: *default-logging
-    deploy: { resources: { limits: { memory: 512M } } }
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
       interval: 30s
@@ -888,7 +949,7 @@ services:
     restart: always
     profiles: ["monitoring"]
     logging: *default-logging
-    deploy: { resources: { limits: { memory: 512M } } }
+    deploy: { resources: { limits: { memory: 512M, cpus: "0.50" } } }
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
@@ -918,7 +979,15 @@ services:
     hostname: nginx
     restart: always
     logging: *default-logging
-    deploy: { resources: { limits: { memory: 256M } } }
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, DAC_OVERRIDE, CHOWN, SETUID, SETGID]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16M
+      - /var/cache/nginx:size=64M
+      - /run:size=1M
+    deploy: { resources: { limits: { memory: 256M, cpus: "0.50" } } }
     ports:
       - "${OPENCTI_PORT:-8443}:8443"
       - "${SHUFFLE_PORT:-3443}:3443"
