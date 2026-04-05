@@ -15,7 +15,12 @@ jobs:
       - name: Lint shell scripts
         run: |
           # SC2034: unused loop var (for i in seq), SC2164: cd without || exit (set -e handles it)
-          shellcheck -S warning -e SC2034,SC2164 setup.sh backup.sh restore.sh upgrade.sh scripts/healthcheck-monitor.sh
+          shellcheck -S warning -e SC2034,SC2164 \
+            setup.sh backup.sh restore.sh upgrade.sh \
+            scripts/healthcheck-monitor.sh \
+            scripts/test-deployment.sh \
+            scripts/ctem-report.sh \
+            scripts/configure-shuffle.sh
           # Upstream wrapper script — exclude word splitting (SC2046) and cd (SC2164)
           shellcheck -S warning -s sh -e SC2046,SC2164 config/wazuh_integrations/custom-opencti
 
@@ -61,6 +66,10 @@ jobs:
         run: |
           sudo apt-get install -yqq libxml2-utils > /dev/null
           xmllint --noout config/wazuh_rules/opencti_rules.xml
+          xmllint --noout config/wazuh_rules/stormshield_rules.xml
+          # Wazuh decoders use multiple root <decoder> elements (no single root).
+          # Wrap in temporary <root> for xmllint validation.
+          echo "<root>$(cat config/wazuh_decoders/stormshield_decoders.xml)</root>" | xmllint --noout -
 
   nginx-validate:
     name: Nginx config
@@ -144,6 +153,8 @@ jobs:
           GRAFANA_ADMIN_PASSWORD=CiTestPassword1
           GRAFANA_PORT=4443
           SMTP_HOSTNAME=localhost
+          ALERT_EMAIL_FROM=wazuh@localhost
+          ALERT_EMAIL_TO=soc@localhost
           OPENCTI_HOSTNAME=localhost
           EOF
 
@@ -154,17 +165,17 @@ jobs:
 
       - name: Validate with all profiles
         run: |
-          docker compose --profile alienvault --profile abuseipdb --profile cve config --quiet
+          docker compose --profile alienvault --profile abuseipdb --profile cve --profile monitoring --profile suricata config --quiet
           echo "All profiles: OK"
 
       - name: Verify service count
         run: |
           BASE=$(docker compose config --services | wc -l)
-          ALL=$(docker compose --profile alienvault --profile abuseipdb --profile cve --profile monitoring config --services | wc -l)
+          ALL=$(docker compose --profile alienvault --profile abuseipdb --profile cve --profile monitoring --profile suricata config --services | wc -l)
           echo "Base services: ${BASE} (expected 26)"
-          echo "All services:  ${ALL} (expected 32)"
+          echo "All services:  ${ALL} (expected 34)"
           [ "$BASE" -eq 26 ] || { echo "FAIL: expected 26 base services, got ${BASE}"; exit 1; }
-          [ "$ALL" -eq 32 ] || { echo "FAIL: expected 32 total services, got ${ALL}"; exit 1; }
+          [ "$ALL" -eq 34 ] || { echo "FAIL: expected 34 total services, got ${ALL}"; exit 1; }
 
       - name: Check all env vars are covered
         run: |
