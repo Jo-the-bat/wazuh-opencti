@@ -153,6 +153,23 @@ docker compose --profile abuseipdb up -d
 docker compose --profile cve up -d
 ```
 
+## CTEM Report (Continuous Threat Exposure Management)
+
+Generate a prioritized vulnerability report that cross-references Wazuh-detected CVEs against CISA KEV (actively exploited vulnerabilities) in OpenCTI:
+
+```bash
+bash scripts/ctem-report.sh
+```
+
+The report covers the 5 CTEM stages:
+1. **Scoping** — enrolled agents and attack surface
+2. **Discovery** — CVEs detected by Wazuh vulnerability scanning
+3. **Prioritization** — cross-reference with CISA KEV to flag actively exploited CVEs
+4. **Threat landscape** — IOC counts, ATT&CK coverage from OpenCTI
+5. **Recommendations** — actionable next steps
+
+Schedule weekly: `0 6 * * 1 cd /path/to/wazuh-opencti && bash scripts/ctem-report.sh >> /var/log/ctem-report.log`
+
 ## Network IDS (optional)
 
 Enable Suricata for network traffic analysis — alerts feed directly into Wazuh:
