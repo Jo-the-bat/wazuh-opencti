@@ -252,6 +252,7 @@ Shuffle requires `/var/run/docker.sock` mounted on `shuffle-backend` and `shuffl
 - **`depends_on` with conditions** — services wait for dependencies to be healthy before starting
 - **Resource limits** — memory caps on all services; JVM heaps and Node.js `--max-old-space-size` sized to fit
 - **Log rotation** — JSON file driver, 10 MB default (50 MB for Wazuh manager), 5 files per container
+- **Archive logging** — all events archived to `wazuh-archives-*` indices via Filebeat for forensic analysis (enabled automatically by `setup.sh`)
 - **Pinned image versions** — all images use explicit version tags from `.env`
 - **Error handling in setup.sh** — `set -euo pipefail`, explicit checks on bcrypt hashing, Docker Compose startup, Wazuh indexer readiness, and security admin initialization
 
@@ -357,7 +358,7 @@ bash restore.sh ./backups/20260403-120000
 Backups include:
 - All configuration files and TLS certificates
 - Elasticsearch data (OpenCTI threat intel)
-- Wazuh indexer data (SIEM alerts/indices)
+- Wazuh indexer data (SIEM alerts, archives, and all indices)
 - Redis, RabbitMQ, MinIO data
 - Shuffle workflows and execution data
 
