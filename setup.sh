@@ -440,10 +440,24 @@ bash /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh
     echo "  WARNING: Security admin returned non-zero (may already be initialized)." >&2
 fi
 
+# Verify indexer is accessible with the configured password
+echo "  Verifying indexer security..."
+if ! docker compose exec -T wazuh.indexer bash -c \
+    "curl -sku admin:${WAZUH_INDEXER_PASSWORD} https://localhost:9200/_cluster/health" 2>/dev/null | grep -q '"status"'; then
+    echo "  ERROR: Cannot authenticate to indexer with configured password." >&2
+    echo "  Check logs: docker compose logs wazuh.indexer" >&2
+    exit 1
+fi
+
 # Enable Filebeat archive forwarding before restarting (default image ships with archives: disabled)
 echo "  Enabling Filebeat archive forwarding..."
 docker compose exec -T wazuh.manager bash -c \
     'sed -i "/archives:/{n;s/enabled: false/enabled: true/}" /etc/filebeat/filebeat.yml'
+# Verify the change took effect
+if ! docker compose exec -T wazuh.manager grep -A1 "archives:" /etc/filebeat/filebeat.yml | grep -q "enabled: true"; then
+    echo "  WARNING: Could not enable Filebeat archive forwarding." >&2
+    echo "  Run manually: docker compose exec wazuh.manager sed -i 's/enabled: false/enabled: true/' /etc/filebeat/filebeat.yml" >&2
+fi
 
 # Restart manager and dashboard to pick up new indexer credentials + Filebeat config
 docker compose restart wazuh.manager wazuh.dashboard 2>&1 | tail -2
