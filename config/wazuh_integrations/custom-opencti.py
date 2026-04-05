@@ -102,6 +102,9 @@ def remove_empties(value):
 # →
 # {'labels:': ['cryptbot', 'exe']}
 def simplify_objectlist(output, listKey, valueKey, newKey):
+    if listKey not in output or not output[listKey]:
+        output[newKey] = []
+        return
     if 'edges' in output[listKey]:
         edges = output[listKey]['edges']
         output[newKey] = [key[valueKey] for edge in edges for _, key in edge.items()]
@@ -150,7 +153,11 @@ def filter_packetbeat_dns(results):
 #  - Confidence (the higher the better)
 #  - valid_until is before now():
 def indicator_sort_func(x):
-    return (x['revoked'], not x['x_opencti_detection'], -x['x_opencti_score'], -x['confidence'], datetime.strptime(x['valid_until'], '%Y-%m-%dT%H:%M:%S.%fZ') <= datetime.now())
+    try:
+        expired = datetime.strptime(x.get('valid_until', ''), '%Y-%m-%dT%H:%M:%S.%fZ') <= datetime.now()
+    except (ValueError, TypeError):
+        expired = False
+    return (x.get('revoked', False), not x.get('x_opencti_detection', False), -x.get('x_opencti_score', 0), -x.get('confidence', 0), expired)
 
 def sort_indicators(indicators):
     # In case there are several indicators, and since we will only extract
@@ -197,9 +204,9 @@ def modify_observable(observable, indicators):
 
     modify_indicator(observable['indicator'])
     # Remove the original list of objects:
-    del observable['indicators']
+    observable.pop('indicators', None)
     # Remove the original list of relationships:
-    del observable['stixCoreRelationships']
+    observable.pop('stixCoreRelationships', None)
 
 # Domain name–IP address releationships are not always up to date in a CTI
 # database (naturally). If a DNS enrichment connector is used to create
@@ -270,10 +277,13 @@ def send_event(msg, agent = None):
 
     debug('# Event:')
     debug(string)
-    sock = socket(AF_UNIX, SOCK_DGRAM)
-    sock.connect(socket_addr)
-    sock.send(string.encode())
-    sock.close()
+    try:
+        sock = socket(AF_UNIX, SOCK_DGRAM)
+        sock.connect(socket_addr)
+        sock.send(string.encode())
+        sock.close()
+    except OSError as e:
+        log('Failed to send event to queue socket: {}'.format(e))
 
 def send_error_event(msg, agent = None):
     send_event({'integration': 'opencti', 'opencti': {
@@ -622,8 +632,8 @@ def query_opencti(alert, url, token):
     new_alerts = []
     try:
         response = requests.post(url, headers=query_headers, json=api_json_body, timeout=30)
-    # Create an alert if the OpenCTI service cannot be reached:
-    except ConnectionError:
+    # Create an alert if the OpenCTI service cannot be reached or times out:
+    except (ConnectionError, requests.exceptions.Timeout):
         log('Failed to connect to {}'.format(url))
         send_error_event('Failed to connect to the OpenCTI API', alert['agent'])
         sys.exit(1)
@@ -639,6 +649,11 @@ def query_opencti(alert, url, token):
 
     debug('# Response:')
     debug(response)
+
+    if not isinstance(response, dict) or 'data' not in response or not response['data']:
+        log('# Unexpected response from API: {}'.format(str(response)[:200]))
+        send_error_event('Unexpected response from OpenCTI API', alert['agent'])
+        return new_alerts
 
     # Sort indicators based on a number of factors in order to prioritise them
     # in case many are returned:

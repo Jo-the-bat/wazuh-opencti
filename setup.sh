@@ -154,6 +154,7 @@ SMTP_HOSTNAME=localhost  # Change to real SMTP server for email alerts
 # --- Nginx hostname (used for self-signed cert CN and SAN) ---
 OPENCTI_HOSTNAME=localhost
 ENVEOF
+    chmod 600 .env
     echo "  Generated with random passwords and UUIDs."
 fi
 
@@ -340,6 +341,10 @@ cat >> config/wazuh_cluster/wazuh_manager.conf << WMEOF2
 </ossec_config>
 WMEOF2
 
+# Restrict permissions on config files containing secrets
+chmod 600 config/wazuh_indexer/internal_users.yml \
+          config/wazuh_dashboard/wazuh.yml \
+          config/wazuh_cluster/wazuh_manager.conf 2>/dev/null || true
 echo "  Config files generated."
 
 # ------------------------------------------
