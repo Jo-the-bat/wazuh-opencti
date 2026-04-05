@@ -183,6 +183,7 @@ services:
     restart: always
     logging: *default-logging
     security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     deploy:
       resources:
         limits:
@@ -242,6 +243,8 @@ services:
     restart: always
     logging: *default-logging
     security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
     deploy:
       resources:
         limits:
@@ -760,6 +763,7 @@ services:
     restart: always
     logging: *default-logging
     security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     deploy:
       resources:
         limits:
