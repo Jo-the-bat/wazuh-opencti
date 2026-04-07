@@ -37,22 +37,24 @@ jobs:
           python-version: "3.x"
       - name: Run bandit
         run: |
-          pip install bandit -q
+          pip install 'bandit[sarif]' -q
           # B108: hardcoded tmp, B110: try/except/pass, B112: try/except/continue
           # These are acceptable in this integration script context
           bandit -r config/wazuh_integrations/custom-opencti.py \
             -s B108,B110,B112 \
             -f txt || true
+          # Generate SARIF output for GitHub Security tab
+          bandit -r config/wazuh_integrations/custom-opencti.py \
+            -s B108,B110,B112 \
+            -f sarif -o bandit.sarif || true
+          # Create empty SARIF if bandit produced no output
+          if [ ! -f bandit.sarif ]; then
+            echo '{"$schema":"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"Bandit","rules":[]}},"results":[]}]}' > bandit.sarif
+          fi
           # Fail only on high severity
           bandit -r config/wazuh_integrations/custom-opencti.py \
             -s B108,B110,B112 \
             -ll
-      - name: Run bandit (SARIF)
-        if: always()
-        run: |
-          bandit -r config/wazuh_integrations/custom-opencti.py \
-            -s B108,B110,B112 \
-            -f sarif -o bandit.sarif || true
       - name: Upload Bandit results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         if: always()
@@ -89,8 +91,14 @@ jobs:
           checkov -f docker-compose.yml \
             --framework docker_compose \
             --skip-check CKV_DOCKER_COMPOSE_2,CKV_DOCKER_COMPOSE_3,CKV_DOCKER_COMPOSE_4 \
-            --output sarif --output-file checkov.sarif \
+            --output sarif --output-file-path . \
             || true
+          # Checkov outputs results_sarif.sarif; create empty SARIF if missing
+          if [ -f results_sarif.sarif ]; then
+            mv results_sarif.sarif checkov.sarif
+          else
+            echo '{"$schema":"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"Checkov","rules":[]}},"results":[]}]}' > checkov.sarif
+          fi
       - name: Upload Checkov results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         if: always()
@@ -182,11 +190,29 @@ jobs:
             trivy image --severity HIGH,CRITICAL --no-progress \
               --format sarif --output "trivy-${SAFE_NAME}.sarif" "$img" 2>/dev/null || true
           done
+          # Merge all SARIF files into one (GitHub requires single run per category)
+          python3 -c "
+          import json, glob
+          merged = {'version': '2.1.0', '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json', 'runs': [{'tool': {'driver': {'name': 'Trivy', 'rules': []}}, 'results': []}]}
+          rule_ids = set()
+          for f in sorted(glob.glob('trivy-*.sarif')):
+              with open(f) as fh:
+                  sarif = json.load(fh)
+              for run in sarif.get('runs', []):
+                  for rule in run.get('tool', {}).get('driver', {}).get('rules', []):
+                      if rule['id'] not in rule_ids:
+                          rule_ids.add(rule['id'])
+                          merged['runs'][0]['tool']['driver']['rules'].append(rule)
+                  merged['runs'][0]['results'].extend(run.get('results', []))
+          with open('trivy-combined.sarif', 'w') as f:
+              json.dump(merged, f)
+          print('Merged %d results from %d files' % (len(merged['runs'][0]['results']), len(glob.glob('trivy-*.sarif'))))
+          "
           echo "CVE scan complete (advisory — does not block pipeline)"
 
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: .
+          sarif_file: trivy-combined.sarif
           category: trivy-image-scan
