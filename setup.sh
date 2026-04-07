@@ -216,6 +216,7 @@ hosts:
 WYEOF
 
 # --- wazuh_manager.conf (with real OpenCTI token) ---
+mkdir -p config/wazuh_cluster
 WAZUH_CLUSTER_KEY=$(openssl rand -hex 16)
 cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
 <ossec_config>
