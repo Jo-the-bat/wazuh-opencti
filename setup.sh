@@ -380,13 +380,12 @@ WMEOF
 
 # Append the integration block with the real token (variable substitution)
 cat >> config/wazuh_cluster/wazuh_manager.conf << WMEOF2
-  <!-- Shuffle SOAR: uncomment after creating a webhook workflow in Shuffle -->
-  <!-- <integration>
+  <integration>
     <name>shuffle</name>
-    <hook_url>SHUFFLE_WEBHOOK_URL</hook_url>
+    <hook_url>SHUFFLE_WEBHOOK_URL_PLACEHOLDER</hook_url>
     <level>3</level>
     <alert_format>json</alert_format>
-  </integration> -->
+  </integration>
 
   <integration>
     <name>custom-opencti</name>
@@ -573,6 +572,32 @@ curl -sku admin:${WAZUH_INDEXER_PASSWORD} -XPOST 'https://localhost:9200/.kibana
 }' 2>/dev/null | grep -q '\"result\"' && echo '  Index pattern wazuh-archives-* created.' || echo '  WARNING: Could not create archives index pattern.' >&2
 "
 
+# Create Shuffle workflow and wire Wazuh integration
+echo "  Creating Shuffle workflow..."
+SHUFFLE_WF_ID=$(curl -sk -X POST https://localhost:3443/api/v1/workflows \
+  -H "Authorization: Bearer ${SHUFFLE_DEFAULT_APIKEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Wazuh Alerts","description":"Receives Wazuh alerts for automated triage"}' 2>/dev/null \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+
+if [ -n "$SHUFFLE_WF_ID" ]; then
+    SHUFFLE_EXEC_URL="http://shuffle-backend:5001/api/v1/workflows/${SHUFFLE_WF_ID}/execute"
+    echo "  Workflow created: ${SHUFFLE_WF_ID}"
+    echo "  Configuring Wazuh → Shuffle integration..."
+    # Update the placeholder in ossec.conf with the real execution URL
+    docker compose exec -T wazuh.manager bash -c \
+        "sed -i 's|SHUFFLE_WEBHOOK_URL_PLACEHOLDER|${SHUFFLE_EXEC_URL}|' /var/ossec/etc/ossec.conf"
+    # Shuffle API key is used as the integration api_key for auth
+    docker compose exec -T wazuh.manager bash -c \
+        "sed -i '/<name>shuffle<\/name>/,/<\/integration>/{
+            /<alert_format>/a\\    <api_key>${SHUFFLE_DEFAULT_APIKEY}</api_key>
+        }' /var/ossec/etc/ossec.conf"
+    echo "  Wazuh → Shuffle integration configured."
+else
+    echo "  WARNING: Could not create Shuffle workflow. Configure manually." >&2
+    echo "  See: bash scripts/configure-shuffle.sh" >&2
+fi
+
 # Restart manager and dashboard to pick up new indexer credentials + Filebeat config
 docker compose restart wazuh.manager wazuh.dashboard 2>&1 | tail -2
 
@@ -602,11 +627,7 @@ echo
 echo "  Shuffle SOAR:     https://localhost:${SHUFFLE_PORT:-3443}"
 echo "    Username: ${SHUFFLE_DEFAULT_USERNAME:-admin}"
 echo "    Password: ${SHUFFLE_DEFAULT_PASSWORD}"
-echo "    To connect Wazuh alerts to Shuffle:"
-echo "      1. Create a workflow in Shuffle with a Webhook trigger"
-echo "      2. Copy the webhook URL"
-echo "      3. Uncomment the Shuffle integration in ossec.conf"
-echo "      4. Restart wazuh.manager"
+echo "    Wazuh → Shuffle: auto-configured (level 3+ alerts)"
 echo
 echo "  Self-signed certs — browser warnings expected."
 echo "  Set OPENCTI_HOSTNAME in .env for custom CN."
