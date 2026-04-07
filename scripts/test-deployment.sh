@@ -255,6 +255,46 @@ else
     warn "Skipping pipeline test (no indicators loaded yet)"
 fi
 
+# --- 10. Shuffle SOAR pipeline test ---
+echo "--- Shuffle Pipeline Test ---"
+# Find the Shuffle workflow configured in ossec.conf
+SHUFFLE_EXEC_URL=$(docker compose exec -T wazuh.manager \
+    grep -A5 '<name>shuffle</name>' /var/ossec/etc/ossec.conf 2>/dev/null \
+    | grep hook_url | sed 's|.*<hook_url>\(.*\)</hook_url>.*|\1|')
+
+if [ -n "$SHUFFLE_EXEC_URL" ] && echo "$SHUFFLE_EXEC_URL" | grep -q "workflows"; then
+    SHUFFLE_WF_ID=$(echo "$SHUFFLE_EXEC_URL" | grep -oP 'workflows/\K[^/]+')
+
+    # Check integratord has Shuffle enabled
+    if docker compose exec -T wazuh.manager grep -q "Enabling integration for: 'shuffle'" \
+        /var/ossec/logs/ossec.log 2>/dev/null; then
+        echo "  PASS  Integratord has Shuffle enabled"
+        ((PASS++))
+    else
+        echo "  FAIL  Integratord did not enable Shuffle integration"
+        ((FAIL++))
+    fi
+
+    # Test direct workflow execution from Wazuh manager
+    SHUFFLE_RESPONSE=$(docker compose exec -T wazuh.manager curl -s -w "\n%{http_code}" \
+        -X POST "$SHUFFLE_EXEC_URL" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${SHUFFLE_DEFAULT_APIKEY}" \
+        -d '{"execution_argument":"{\"rule\":{\"level\":3,\"id\":\"000\",\"description\":\"Shuffle pipeline test\"}}","start":""}' 2>/dev/null)
+    SHUFFLE_HTTP=$(echo "$SHUFFLE_RESPONSE" | tail -1)
+    SHUFFLE_SUCCESS=$(echo "$SHUFFLE_RESPONSE" | head -1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('success',False))" 2>/dev/null || echo "False")
+
+    if [ "$SHUFFLE_HTTP" = "200" ] && [ "$SHUFFLE_SUCCESS" = "True" ]; then
+        echo "  PASS  Wazuh → Shuffle: workflow execution successful"
+        ((PASS++))
+    else
+        echo "  FAIL  Wazuh → Shuffle: workflow execution failed (HTTP $SHUFFLE_HTTP)"
+        ((FAIL++))
+    fi
+else
+    warn "Shuffle integration not configured in ossec.conf (run setup.sh to enable)"
+fi
+
 # --- Summary ---
 echo ""
 echo "============================================"
