@@ -153,7 +153,7 @@ jobs:
           WAZUH_CONNECTOR_VERSION=0.3.0
           CONNECTOR_WAZUH_ID=00000000-0000-0000-0000-000000000011
           SHUFFLE_VERSION=v2.2.0
-          SHUFFLE_OPENSEARCH_VERSION=2.14.0
+          SHUFFLE_OPENSEARCH_VERSION=2.19.2
           SHUFFLE_DEFAULT_USERNAME=admin
           SHUFFLE_DEFAULT_PASSWORD=CiTestPassword1
           SHUFFLE_DEFAULT_APIKEY=00000000-0000-0000-0000-000000000012
@@ -182,7 +182,7 @@ jobs:
             "nginx:1.28-alpine"
             "redis:7.4"
             "rabbitmq:4.2.5-management"
-            "opensearchproject/opensearch:2.14.0"
+            "opensearchproject/opensearch:2.19.2"
           )
           for img in "${IMAGES[@]}"; do
             echo "=== Scanning ${img} ==="
