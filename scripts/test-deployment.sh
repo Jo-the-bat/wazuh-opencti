@@ -202,9 +202,11 @@ if edges:
 " 2>/dev/null || true)
 
     if [ -n "$IOC_URL_E2E" ]; then
-        # Count existing OpenCTI alerts before injection
+        # Count existing OpenCTI alerts and Shuffle calls before injection
         BEFORE_COUNT=$(docker compose exec -T wazuh.manager \
             grep -cE '"id":"10021[2-5]"' /var/ossec/logs/alerts/alerts.json 2>/dev/null || echo 0)
+        SHUFFLE_BEFORE=$(docker compose exec -T wazuh.manager \
+            grep -c shuffle /var/ossec/logs/integrations.log 2>/dev/null || echo 0)
 
         # Inject a realistic audit EXECVE event via the analysisd queue socket.
         # This exercises the FULL pipeline:
@@ -242,6 +244,19 @@ sock.close()
         if [ "$PIPELINE_PASS" = true ]; then
             echo "  PASS  Full pipeline: event → decoder → integratord → OpenCTI → alert (rule 100212)"
             ((PASS++))
+
+            # Check that the OpenCTI alert (level 12) also triggered Shuffle
+            # Wait a few extra seconds for Shuffle to process
+            sleep 5
+            SHUFFLE_AFTER=$(docker compose exec -T wazuh.manager \
+                grep -c shuffle /var/ossec/logs/integrations.log 2>/dev/null || echo 0)
+            if [ "$SHUFFLE_AFTER" -gt "$SHUFFLE_BEFORE" ]; then
+                echo "  PASS  OpenCTI alert → Shuffle: integratord forwarded alert to Shuffle"
+                ((PASS++))
+            else
+                echo "  FAIL  OpenCTI alert → Shuffle: alert not forwarded (check Shuffle integration in ossec.conf)"
+                ((FAIL++))
+            fi
         else
             echo "  FAIL  Full pipeline: no OpenCTI alert generated within 60s"
             ((FAIL++))
