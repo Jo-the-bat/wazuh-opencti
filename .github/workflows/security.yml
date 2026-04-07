@@ -13,6 +13,9 @@ jobs:
   secret-scanning:
     name: Secret scanning (gitleaks)
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -24,6 +27,9 @@ jobs:
   python-security:
     name: Python security (bandit)
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -41,10 +47,25 @@ jobs:
           bandit -r config/wazuh_integrations/custom-opencti.py \
             -s B108,B110,B112 \
             -ll
+      - name: Run bandit (SARIF)
+        if: always()
+        run: |
+          bandit -r config/wazuh_integrations/custom-opencti.py \
+            -s B108,B110,B112 \
+            -f sarif -o bandit.sarif || true
+      - name: Upload Bandit results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
 
   iac-scanning:
     name: IaC scanning (checkov)
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -62,12 +83,27 @@ jobs:
           # CKV_DOCKER_COMPOSE_2: no user set (many images require root)
           # CKV_DOCKER_COMPOSE_3: no security_opt (not needed for all services)
           # CKV_DOCKER_COMPOSE_4: no cap_drop (not needed for all services)
-          # Run again with soft-fail for visibility but don't block
-          echo "Checkov scan complete (advisory only)"
+      - name: Run checkov (SARIF)
+        if: always()
+        run: |
+          checkov -f docker-compose.yml \
+            --framework docker_compose \
+            --skip-check CKV_DOCKER_COMPOSE_2,CKV_DOCKER_COMPOSE_3,CKV_DOCKER_COMPOSE_4 \
+            --output sarif --output-file checkov.sarif \
+            || true
+      - name: Upload Checkov results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov.sarif
+          category: checkov
 
   image-cve-scan:
     name: Image CVE scan (Trivy)
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - name: Generate CI .env
@@ -140,11 +176,17 @@ jobs:
             "rabbitmq:4.2.5-management"
             "opensearchproject/opensearch:2.14.0"
           )
-          FAILED=0
           for img in "${IMAGES[@]}"; do
             echo "=== Scanning ${img} ==="
-            if ! trivy image --severity CRITICAL --exit-code 0 --no-progress "$img" 2>/dev/null; then
-              echo "WARNING: scan failed for ${img}"
-            fi
+            SAFE_NAME=$(echo "$img" | tr '/:' '-')
+            trivy image --severity HIGH,CRITICAL --no-progress \
+              --format sarif --output "trivy-${SAFE_NAME}.sarif" "$img" 2>/dev/null || true
           done
           echo "CVE scan complete (advisory — does not block pipeline)"
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: .
+          category: trivy-image-scan

@@ -10,6 +10,9 @@ jobs:
   shellcheck:
     name: Shell scripts
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - name: Lint shell scripts
@@ -23,6 +26,51 @@ jobs:
             scripts/configure-shuffle.sh
           # Upstream wrapper script — exclude word splitting (SC2046) and cd (SC2164)
           shellcheck -S warning -s sh -e SC2046,SC2164 config/wazuh_integrations/custom-opencti
+      - name: ShellCheck (SARIF)
+        if: always()
+        run: |
+          shellcheck -S warning -e SC2034,SC2164 \
+            -f json \
+            setup.sh scripts/*.sh 2>/dev/null | python3 -c "
+          import sys, json
+          checks = json.load(sys.stdin)
+          sarif = {
+            '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json',
+            'version': '2.1.0',
+            'runs': [{
+              'tool': {'driver': {'name': 'ShellCheck', 'rules': []}},
+              'results': []
+            }]
+          }
+          rules_seen = set()
+          for c in checks:
+            rule_id = 'SC%d' % c['code']
+            if rule_id not in rules_seen:
+              rules_seen.add(rule_id)
+              sarif['runs'][0]['tool']['driver']['rules'].append({
+                'id': rule_id,
+                'shortDescription': {'text': c.get('message', rule_id)}
+              })
+            sarif['runs'][0]['results'].append({
+              'ruleId': rule_id,
+              'level': {'error': 'error', 'warning': 'warning', 'info': 'note', 'style': 'note'}.get(c.get('level','warning'), 'warning'),
+              'message': {'text': c.get('message', '')},
+              'locations': [{
+                'physicalLocation': {
+                  'artifactLocation': {'uri': c.get('file','')},
+                  'region': {'startLine': c.get('line',1), 'startColumn': c.get('column',1)}
+                }
+              }]
+            })
+          json.dump(sarif, open('shellcheck.sarif','w'), indent=2)
+          print('Generated shellcheck.sarif with %d findings' % len(checks))
+          " || true
+      - name: Upload ShellCheck results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: shellcheck.sarif
+          category: shellcheck
 
   python-check:
     name: Python syntax
