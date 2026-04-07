@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Smoke test to verify the deployment is fully operational.
 # Run after setup.sh or anytime to check system health.
+# Includes end-to-end pipeline test: injects a real event through the full
+# Wazuh analysis chain (decoder → rules → integratord → OpenCTI → alert).
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -152,36 +154,105 @@ echo "--- Wazuh Dashboard ---"
 check "Dashboard reachable (:9443)" \
     curl -sk -o /dev/null https://localhost:9443/
 
-# --- 8. Integration test (optional, requires indicators) ---
-echo "--- Integration Test ---"
+# --- 8. Integration script test (direct call, validates script + API connectivity) ---
+echo "--- Integration Script Test ---"
 if [ "$INDICATOR_COUNT" -gt 0 ]; then
-    IOC=$(curl -sk -X POST https://localhost:8443/graphql \
+    IOC_URL=$(curl -sk -X POST https://localhost:8443/graphql \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
-        -d '{"query":"{ indicators(first:1) { edges { node { name } } } }"}' 2>/dev/null | \
+        -d '{"query":"{ indicators(first:1, filters: { mode: and, filterGroups: [], filters: [{ key: \"pattern_type\", values: [\"stix\"] }] }) { edges { node { name } } } }"}' 2>/dev/null | \
         python3 -c "import sys,json;print(json.load(sys.stdin)['data']['indicators']['edges'][0]['node']['name'])" 2>/dev/null || true)
 
-    if [ -n "$IOC" ]; then
+    if [ -n "$IOC_URL" ]; then
+        # Direct call to integration script — validates it is executable and can reach OpenCTI API
         docker compose exec -T wazuh.manager bash -c "cat > /tmp/smoke_test.json << ENDTEST
-{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000+0000)\",\"rule\":{\"level\":3,\"id\":\"80792\",\"groups\":[\"audit\",\"audit_command\"],\"description\":\"Audit: smoke test\"},\"agent\":{\"id\":\"000\",\"name\":\"smoke-test\",\"ip\":\"127.0.0.1\"},\"data\":{\"audit\":{\"execve\":{\"a0\":\"curl\",\"a1\":\"$IOC\"}}},\"id\":\"smoke-test-$(date +%s)\"}
+{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000+0000)\",\"rule\":{\"level\":3,\"id\":\"80792\",\"groups\":[\"audit\",\"audit_command\"],\"description\":\"Audit: smoke test\"},\"agent\":{\"id\":\"000\",\"name\":\"smoke-test\",\"ip\":\"127.0.0.1\"},\"data\":{\"audit\":{\"execve\":{\"a0\":\"curl\",\"a1\":\"$IOC_URL\"}}},\"id\":\"smoke-test-$(date +%s)\"}
 ENDTEST"
-        docker compose exec -T wazuh.manager \
+        if docker compose exec -T wazuh.manager \
             /var/ossec/integrations/custom-opencti /tmp/smoke_test.json \
-            "$OPENCTI_ADMIN_TOKEN" http://opencti:8080/graphql >/dev/null 2>&1
-
-        sleep 5
-        if docker compose exec -T wazuh.manager grep -q "smoke-test" /var/ossec/logs/alerts/alerts.json 2>/dev/null; then
-            echo "  PASS  Wazuh->OpenCTI: malicious URL generated alert"
+            "$OPENCTI_ADMIN_TOKEN" http://opencti:8080/graphql 2>/dev/null; then
+            echo "  PASS  Integration script executable and API reachable"
             ((PASS++))
         else
-            echo "  FAIL  Wazuh->OpenCTI: no alert generated for known IOC"
+            echo "  FAIL  Integration script failed (exit code $?)"
             ((FAIL++))
         fi
     else
-        warn "Could not fetch IOC for integration test"
+        warn "Could not fetch IOC for script test"
     fi
 else
-    warn "Skipping integration test (no indicators loaded yet)"
+    warn "Skipping integration script test (no indicators loaded yet)"
+fi
+
+# --- 9. End-to-end pipeline test (event injection through full Wazuh pipeline) ---
+echo "--- Pipeline End-to-End Test ---"
+if [ "$INDICATOR_COUNT" -gt 0 ]; then
+    # Find a URL indicator starting with http (audit_command path in custom-opencti.py)
+    IOC_URL_E2E=$(curl -sk -X POST https://localhost:8443/graphql \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
+        -d '{"query":"{ indicators(first:1, filters: { mode: and, filterGroups: [], filters: [{ key: \"pattern_type\", values: [\"stix\"] }, { key: \"pattern\", operator: starts_with, values: [\"[url:\"] }] }) { edges { node { name pattern } } } }"}' 2>/dev/null | \
+        python3 -c "
+import sys,json,re
+edges = json.load(sys.stdin)['data']['indicators']['edges']
+if edges:
+    name = edges[0]['node']['name']
+    if name.startswith('http'):
+        print(name)
+" 2>/dev/null || true)
+
+    if [ -n "$IOC_URL_E2E" ]; then
+        # Count existing OpenCTI alerts before injection
+        BEFORE_COUNT=$(docker compose exec -T wazuh.manager \
+            grep -cE '"id":"10021[2-5]"' /var/ossec/logs/alerts/alerts.json 2>/dev/null || echo 0)
+
+        # Inject a realistic audit EXECVE event via the analysisd queue socket.
+        # This exercises the FULL pipeline:
+        #   queue socket → analysisd decoder → rule 80792 (audit_command group)
+        #   → integratord → custom-opencti.py → OpenCTI GraphQL API
+        #   → IOC match → alert via queue socket → rule 100212/100213
+        docker compose exec -T wazuh.manager python3 -c "
+from socket import socket, AF_UNIX, SOCK_DGRAM
+audit = (
+    'type=SYSCALL msg=audit(1712500099.000:99998): arch=c000003e syscall=59 '
+    'success=yes exit=0 a0=0x1 a1=0x2 a2=0x3 a3=0x4 items=2 ppid=1 pid=9999 '
+    'auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 '
+    'ses=1 comm=\"curl\" exe=\"/usr/bin/curl\" key=\"audit-wazuh-c\"'
+    ' type=EXECVE msg=audit(1712500099.000:99998): argc=2 a0=\"curl\"'
+    ' a1=\"$IOC_URL_E2E\"'
+)
+sock = socket(AF_UNIX, SOCK_DGRAM)
+sock.connect('/var/ossec/queue/sockets/queue')
+sock.send(('1:/var/log/audit/audit.log:' + audit).encode())
+sock.close()
+" 2>/dev/null
+
+        # Wait for the pipeline to process (decoder → rules → integratord → OpenCTI → alert)
+        PIPELINE_PASS=false
+        for i in $(seq 1 12); do
+            sleep 5
+            AFTER_COUNT=$(docker compose exec -T wazuh.manager \
+                grep -cE '"id":"10021[2-5]"' /var/ossec/logs/alerts/alerts.json 2>/dev/null || echo 0)
+            if [ "$AFTER_COUNT" -gt "$BEFORE_COUNT" ]; then
+                PIPELINE_PASS=true
+                break
+            fi
+        done
+
+        if [ "$PIPELINE_PASS" = true ]; then
+            echo "  PASS  Full pipeline: event → decoder → integratord → OpenCTI → alert (rule 100212)"
+            ((PASS++))
+        else
+            echo "  FAIL  Full pipeline: no OpenCTI alert generated within 60s"
+            ((FAIL++))
+            echo "         Check: docker compose logs wazuh.manager --tail 20"
+            echo "         Check: docker compose exec wazuh.manager tail -5 /var/ossec/logs/integrations.log"
+        fi
+    else
+        warn "No URL-type indicator found for pipeline test (connectors may still be ingesting)"
+    fi
+else
+    warn "Skipping pipeline test (no indicators loaded yet)"
 fi
 
 # --- Summary ---

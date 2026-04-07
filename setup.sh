@@ -560,6 +560,19 @@ if ! docker compose exec -T wazuh.manager grep -A1 "archives:" /etc/filebeat/fil
     echo "  Run manually: docker compose exec wazuh.manager sed -i 's/enabled: false/enabled: true/' /etc/filebeat/filebeat.yml" >&2
 fi
 
+# Create wazuh-archives index pattern so archives are browsable in Dashboard > Discover
+echo "  Creating wazuh-archives index pattern..."
+docker compose exec -T wazuh.indexer bash -c "
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -XPOST 'https://localhost:9200/.kibana/_doc/index-pattern:wazuh-archives-*' \
+  -H 'Content-Type: application/json' -d '{
+  \"type\": \"index-pattern\",
+  \"index-pattern\": {
+    \"title\": \"wazuh-archives-*\",
+    \"timeFieldName\": \"timestamp\"
+  }
+}' 2>/dev/null | grep -q '\"result\"' && echo '  Index pattern wazuh-archives-* created.' || echo '  WARNING: Could not create archives index pattern.' >&2
+"
+
 # Restart manager and dashboard to pick up new indexer credentials + Filebeat config
 docker compose restart wazuh.manager wazuh.dashboard 2>&1 | tail -2
 
