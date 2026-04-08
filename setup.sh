@@ -414,6 +414,20 @@ fi
 # so they need to be world-readable (644). Host-level access is controlled
 # by the parent directory and the Docker socket group.
 # Only .env (plaintext passwords, not bind-mounted) stays at 600.
+# --- Generate Filebeat custom init script (runs after default init, survives down/up) ---
+# The Wazuh manager regenerates filebeat.yml on every start via 1-config-filebeat.
+# This script runs after it to enable archives. Bind-mounted as a cont-init.d script.
+# The shard count is enforced by a high-priority index template (wazuh-shards, order 1)
+# in the indexer, which overrides Filebeat's default of 3 shards.
+mkdir -p config/filebeat
+cat > config/filebeat/2-custom-filebeat << 'CFINITEOF'
+#!/usr/bin/with-contenv bash
+# Enable archive forwarding in Filebeat (runs after 1-config-filebeat)
+sed -i '/archives:/{n;s/enabled: false/enabled: true/}' /etc/filebeat/filebeat.yml
+CFINITEOF
+chmod 755 config/filebeat/2-custom-filebeat
+echo "  Filebeat init script generated (archives enabled on every start)."
+
 chmod 644 config/wazuh_indexer/internal_users.yml \
           config/wazuh_dashboard/wazuh.yml \
           config/wazuh_cluster/wazuh_manager.conf 2>/dev/null || true
@@ -521,27 +535,30 @@ if ! docker compose exec -T wazuh.indexer bash -c \
     exit 1
 fi
 
-# Set index template: 1 shard per index (single-node, no replicas)
+# Set index template with high priority (order 1) to override Filebeat's template (order 0)
+# This persists in the indexer data volume and survives docker compose down/up
 echo "  Configuring index template (1 shard per index)..."
 docker compose exec -T wazuh.indexer bash -c "
-curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_template/wazuh' \
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_template/wazuh-shards' \
   -H 'Content-Type: application/json' -d '{
-  \"index_patterns\": [\"wazuh-alerts-4.x-*\", \"wazuh-archives-4.x-*\"],
+  \"order\": 1,
+  \"index_patterns\": [\"wazuh-alerts-*\", \"wazuh-archives-*\"],
   \"settings\": {
     \"index.number_of_shards\": 1,
     \"index.number_of_replicas\": 0
   }
-}' 2>/dev/null | grep -q 'acknowledged' && echo '  Index template: 1 shard, 0 replicas.' || echo '  WARNING: Could not update index template.' >&2
+}' 2>/dev/null | grep -q 'acknowledged' && echo '  Index template: 1 shard, 0 replicas (priority 1).' || echo '  WARNING: Could not create index template.' >&2
 "
 docker compose exec -T wazuh.indexer bash -c "
-curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_template/wazuh-monitoring' \
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_template/wazuh-monitoring-shards' \
   -H 'Content-Type: application/json' -d '{
+  \"order\": 1,
   \"index_patterns\": [\"wazuh-monitoring-*\", \"wazuh-statistics-*\"],
   \"settings\": {
     \"index.number_of_shards\": 1,
     \"index.number_of_replicas\": 0
   }
-}' 2>/dev/null | grep -q 'acknowledged' || echo '  WARNING: Could not update monitoring index template.' >&2
+}' 2>/dev/null | grep -q 'acknowledged' || echo '  WARNING: Could not create monitoring index template.' >&2
 "
 
 # Apply index lifecycle policies (hot → warm → delete)
@@ -626,29 +643,6 @@ curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugin
   }
 }' 2>/dev/null | grep -q 'policy_id' && echo '  Monitoring lifecycle: delete after 30d.' || echo '  WARNING: Could not apply monitoring lifecycle policy.' >&2
 "
-
-# Set Filebeat template to 1 shard per index (default is 3, wasteful on single-node)
-echo "  Setting Filebeat template to 1 shard per index..."
-docker compose exec -T wazuh.manager python3 -c "
-import json
-with open('/etc/filebeat/wazuh-template.json','r+') as f:
-    t = json.load(f)
-    t['settings']['index.number_of_shards'] = '1'
-    t['settings']['index.number_of_replicas'] = '0'
-    t['settings'].pop('index.auto_expand_replicas', None)
-    f.seek(0); json.dump(t, f); f.truncate()
-print('  Filebeat template: 1 shard, 0 replicas.')
-" 2>/dev/null
-
-# Enable Filebeat archive forwarding before restarting (default image ships with archives: disabled)
-echo "  Enabling Filebeat archive forwarding..."
-docker compose exec -T wazuh.manager bash -c \
-    'sed -i "/archives:/{n;s/enabled: false/enabled: true/}" /etc/filebeat/filebeat.yml'
-# Verify the change took effect
-if ! docker compose exec -T wazuh.manager grep -A1 "archives:" /etc/filebeat/filebeat.yml | grep -q "enabled: true"; then
-    echo "  WARNING: Could not enable Filebeat archive forwarding." >&2
-    echo "  Run manually: docker compose exec wazuh.manager sed -i 's/enabled: false/enabled: true/' /etc/filebeat/filebeat.yml" >&2
-fi
 
 # Create wazuh-archives index pattern so archives are browsable in Dashboard > Discover
 echo "  Creating wazuh-archives index pattern..."

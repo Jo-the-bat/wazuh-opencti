@@ -12,3 +12,4 @@ config/wazuh_cluster/wazuh_manager.conf
 config/wazuh_indexer_ssl_certs/
 config/nginx/ssl/
 __pycache__/
+

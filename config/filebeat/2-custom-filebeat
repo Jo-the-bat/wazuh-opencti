@@ -1,0 +1,3 @@
+#!/usr/bin/with-contenv bash
+# Enable archive forwarding in Filebeat (runs after 1-config-filebeat)
+sed -i '/archives:/{n;s/enabled: false/enabled: true/}' /etc/filebeat/filebeat.yml
