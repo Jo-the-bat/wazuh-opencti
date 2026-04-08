@@ -521,18 +521,47 @@ if ! docker compose exec -T wazuh.indexer bash -c \
     exit 1
 fi
 
-# Apply index lifecycle policy (delete old indices to prevent disk exhaustion)
-echo "  Applying index lifecycle policy..."
+# Set index template: 1 shard per index (single-node, no replicas)
+echo "  Configuring index template (1 shard per index)..."
 docker compose exec -T wazuh.indexer bash -c "
-curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugins/_ism/policies/wazuh-index-lifecycle' \
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_template/wazuh' \
+  -H 'Content-Type: application/json' -d '{
+  \"index_patterns\": [\"wazuh-alerts-4.x-*\", \"wazuh-archives-4.x-*\"],
+  \"settings\": {
+    \"index.number_of_shards\": 1,
+    \"index.number_of_replicas\": 0
+  }
+}' 2>/dev/null | grep -q 'acknowledged' && echo '  Index template: 1 shard, 0 replicas.' || echo '  WARNING: Could not update index template.' >&2
+"
+docker compose exec -T wazuh.indexer bash -c "
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_template/wazuh-monitoring' \
+  -H 'Content-Type: application/json' -d '{
+  \"index_patterns\": [\"wazuh-monitoring-*\", \"wazuh-statistics-*\"],
+  \"settings\": {
+    \"index.number_of_shards\": 1,
+    \"index.number_of_replicas\": 0
+  }
+}' 2>/dev/null | grep -q 'acknowledged' || echo '  WARNING: Could not update monitoring index template.' >&2
+"
+
+# Apply index lifecycle policies (hot → warm → delete)
+echo "  Applying index lifecycle policies..."
+# Alerts: hot 90d → warm → delete at 1 year
+docker compose exec -T wazuh.indexer bash -c "
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugins/_ism/policies/wazuh-alerts-lifecycle' \
   -H 'Content-Type: application/json' -d '{
   \"policy\": {
-    \"description\": \"Rotate and delete old Wazuh indices\",
-    \"default_state\": \"open\",
+    \"description\": \"Wazuh alerts: hot 90d, warm, delete at 1 year\",
+    \"default_state\": \"hot\",
     \"states\": [
       {
-        \"name\": \"open\",
-        \"transitions\": [{\"state_name\": \"delete\", \"conditions\": {\"min_index_age\": \"90d\"}}]
+        \"name\": \"hot\",
+        \"transitions\": [{\"state_name\": \"warm\", \"conditions\": {\"min_index_age\": \"90d\"}}]
+      },
+      {
+        \"name\": \"warm\",
+        \"actions\": [{\"read_only\": {}}],
+        \"transitions\": [{\"state_name\": \"delete\", \"conditions\": {\"min_index_age\": \"365d\"}}]
       },
       {
         \"name\": \"delete\",
@@ -540,14 +569,76 @@ curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugin
       }
     ],
     \"ism_template\": [
-      {\"index_patterns\": [\"wazuh-alerts-*\"], \"priority\": 100},
-      {\"index_patterns\": [\"wazuh-archives-*\"], \"priority\": 100},
+      {\"index_patterns\": [\"wazuh-alerts-*\"], \"priority\": 100}
+    ]
+  }
+}' 2>/dev/null | grep -q 'policy_id' && echo '  Alerts lifecycle: hot 90d → warm → delete 1y.' || echo '  WARNING: Could not apply alerts lifecycle policy.' >&2
+"
+# Archives: hot 90d → warm → delete at 1 year
+docker compose exec -T wazuh.indexer bash -c "
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugins/_ism/policies/wazuh-archives-lifecycle' \
+  -H 'Content-Type: application/json' -d '{
+  \"policy\": {
+    \"description\": \"Wazuh archives: hot 90d, warm, delete at 1 year\",
+    \"default_state\": \"hot\",
+    \"states\": [
+      {
+        \"name\": \"hot\",
+        \"transitions\": [{\"state_name\": \"warm\", \"conditions\": {\"min_index_age\": \"90d\"}}]
+      },
+      {
+        \"name\": \"warm\",
+        \"actions\": [{\"read_only\": {}}],
+        \"transitions\": [{\"state_name\": \"delete\", \"conditions\": {\"min_index_age\": \"365d\"}}]
+      },
+      {
+        \"name\": \"delete\",
+        \"actions\": [{\"delete\": {}}]
+      }
+    ],
+    \"ism_template\": [
+      {\"index_patterns\": [\"wazuh-archives-*\"], \"priority\": 100}
+    ]
+  }
+}' 2>/dev/null | grep -q 'policy_id' && echo '  Archives lifecycle: hot 90d → warm → delete 1y.' || echo '  WARNING: Could not apply archives lifecycle policy.' >&2
+"
+# Monitoring/Statistics: delete after 30 days (no warm, low-value data)
+docker compose exec -T wazuh.indexer bash -c "
+curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugins/_ism/policies/wazuh-monitoring-lifecycle' \
+  -H 'Content-Type: application/json' -d '{
+  \"policy\": {
+    \"description\": \"Wazuh monitoring/statistics: delete after 30 days\",
+    \"default_state\": \"hot\",
+    \"states\": [
+      {
+        \"name\": \"hot\",
+        \"transitions\": [{\"state_name\": \"delete\", \"conditions\": {\"min_index_age\": \"30d\"}}]
+      },
+      {
+        \"name\": \"delete\",
+        \"actions\": [{\"delete\": {}}]
+      }
+    ],
+    \"ism_template\": [
       {\"index_patterns\": [\"wazuh-monitoring-*\"], \"priority\": 100},
       {\"index_patterns\": [\"wazuh-statistics-*\"], \"priority\": 100}
     ]
   }
-}' 2>/dev/null | grep -q 'policy_id' && echo '  Index lifecycle: 90-day retention applied.' || echo '  WARNING: Could not apply index lifecycle policy.' >&2
+}' 2>/dev/null | grep -q 'policy_id' && echo '  Monitoring lifecycle: delete after 30d.' || echo '  WARNING: Could not apply monitoring lifecycle policy.' >&2
 "
+
+# Set Filebeat template to 1 shard per index (default is 3, wasteful on single-node)
+echo "  Setting Filebeat template to 1 shard per index..."
+docker compose exec -T wazuh.manager python3 -c "
+import json
+with open('/etc/filebeat/wazuh-template.json','r+') as f:
+    t = json.load(f)
+    t['settings']['index.number_of_shards'] = '1'
+    t['settings']['index.number_of_replicas'] = '0'
+    t['settings'].pop('index.auto_expand_replicas', None)
+    f.seek(0); json.dump(t, f); f.truncate()
+print('  Filebeat template: 1 shard, 0 replicas.')
+" 2>/dev/null
 
 # Enable Filebeat archive forwarding before restarting (default image ships with archives: disabled)
 echo "  Enabling Filebeat archive forwarding..."
