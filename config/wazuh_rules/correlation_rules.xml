@@ -1,0 +1,230 @@
+<!--
+  Correlation Rules for Wazuh
+  Range: 104000-104049
+
+  Categories:
+    104000-104004  SSH Brute-Force Variations
+    104010-104014  Port Scanning Detection
+    104020-104024  Lateral Movement
+    104030-104034  Suspicious Process Execution
+    104040-104049  Web Attacks
+
+  This program is a free software; you can redistribute it and/or modify it under the terms of GPLv3.
+-->
+
+<!-- ============================================================
+     SSH Brute-Force Variations (104000-104004)
+     ============================================================ -->
+<group name="correlation,attack,">
+
+  <!-- 104000: Distributed SSH brute-force
+       Multiple sources failing SSH auth against the same host in a short window.
+       Built-in rule 5716 = SSHD authentication failure. -->
+  <rule id="104000" level="12" frequency="8" timeframe="300">
+    <if_matched_sid>5716</if_matched_sid>
+    <same_dstip />
+    <different_srcip />
+    <description>Distributed SSH brute-force: multiple sources targeting $(dstip).</description>
+    <mitre>
+      <id>T1110.003</id>
+    </mitre>
+    <group>authentication_failures,sshd,pci_dss_11.4,pci_dss_10.2.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104001: SSH login success after repeated failures from the same IP.
+       Indicates possible credential compromise.
+       Built-in rule 5716 = SSHD authentication failure.
+       Built-in rule 5715 = SSHD authentication success. -->
+  <rule id="104001" level="13" timeframe="600">
+    <if_sid>5715</if_sid>
+    <if_matched_sid>5716</if_matched_sid>
+    <same_srcip />
+    <description>SSH successful login after multiple failures from $(srcip) - possible credential compromise.</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>authentication_success,sshd,pci_dss_10.2.4,pci_dss_10.2.5,pci_dss_11.4,gdpr_IV_35.7.d,gdpr_IV_32.2,</group>
+  </rule>
+
+  <!-- ============================================================
+       Port Scanning Detection (104010-104014)
+       ============================================================ -->
+
+  <!-- 104010: Firewall port scan detection.
+       High frequency of firewall blocks from the same source IP.
+       References built-in firewall drop rules (2, 5710) and custom Stormshield block (103002). -->
+  <rule id="104010" level="11" frequency="15" timeframe="120">
+    <if_matched_group>firewall</if_matched_group>
+    <same_srcip />
+    <description>Possible port scan: $(srcip) triggered 15+ firewall blocks in 120s.</description>
+    <mitre>
+      <id>T1046</id>
+    </mitre>
+    <group>recon,firewall,pci_dss_11.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104011: Connection attempt to a known malicious/backdoor port.
+       Ports: 4444 (Metasploit), 5555 (ADB), 6666 (IRC bot), 8888 (common RAT),
+       31337 (Back Orifice), 1234 (generic backdoor). -->
+  <rule id="104011" level="10">
+    <if_matched_group>firewall</if_matched_group>
+    <dstport type="pcre2">^(4444|5555|6666|8888|31337|1234)$</dstport>
+    <description>Connection attempt to known malicious port $(dstport) from $(srcip).</description>
+    <mitre>
+      <id>T1046</id>
+    </mitre>
+    <group>recon,firewall,pci_dss_10.6.1,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- ============================================================
+       Lateral Movement (104020-104024)
+       ============================================================ -->
+
+  <!-- 104020: PsExec-style remote service installation.
+       Windows Event ID 7045 (new service installed) with known PsExec patterns.
+       Sysmon or Windows event channel. -->
+  <rule id="104020" level="12">
+    <if_sid>61138</if_sid>
+    <field name="win.eventdata.serviceName" type="pcre2">(?i)(PSEXE|paexe|remcomsvc|csexe|winexe)</field>
+    <description>PsExec-style remote service installed: $(win.eventdata.serviceName) on $(hostname).</description>
+    <mitre>
+      <id>T1021.002</id>
+    </mitre>
+    <group>lateral_movement,sysmon,windows,pci_dss_10.2.7,pci_dss_10.6.1,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104021: Multiple authentication failures across the network.
+       Frequency-based rule on general auth failure events.
+       Built-in rule 5710 = Possible password guessing attempt. -->
+  <rule id="104021" level="12" frequency="10" timeframe="120">
+    <if_matched_group>authentication_failed</if_matched_group>
+    <same_srcip />
+    <description>Multiple authentication failures from $(srcip) across the network - possible lateral movement.</description>
+    <mitre>
+      <id>T1021</id>
+    </mitre>
+    <group>lateral_movement,authentication_failures,pci_dss_10.2.4,pci_dss_10.6.1,pci_dss_11.4,gdpr_IV_35.7.d,gdpr_IV_32.2,</group>
+  </rule>
+
+  <!-- ============================================================
+       Suspicious Process Execution (104030-104034)
+       ============================================================ -->
+
+  <!-- 104030: Reverse shell pattern detection.
+       Matches common reverse shell one-liners: bash -i, nc -e, python socket,
+       perl socket, ruby socket, php exec. -->
+  <rule id="104030" level="14">
+    <if_group>syscheck|sysmon|ossec</if_group>
+    <match type="pcre2">(?i)(bash\s+-i\s+&gt;&amp;\s*/dev/tcp|nc\s+(-e|--exec)|ncat\s+(-e|--exec)|python[23]?\s+-c\s+.*(socket|pty\.spawn)|perl\s+-e\s+.*socket|ruby\s+-rsocket|php\s+-r\s+.*fsockopen|socat\s+.*exec:|mkfifo\s+.*nc\b)</match>
+    <description>Reverse shell pattern detected: $(full_log).</description>
+    <mitre>
+      <id>T1059</id>
+    </mitre>
+    <group>command_execution,exploit,pci_dss_10.2.7,pci_dss_10.6.1,pci_dss_11.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104031: Execution from temporary directories.
+       Malware commonly drops and executes from /tmp, /var/tmp, /dev/shm. -->
+  <rule id="104031" level="12">
+    <if_group>syscheck|sysmon|ossec</if_group>
+    <match type="pcre2">(?i)(/tmp/|/var/tmp/|/dev/shm/)\S+\s</match>
+    <description>Process execution from temporary directory on $(hostname).</description>
+    <mitre>
+      <id>T1059</id>
+    </mitre>
+    <group>command_execution,pci_dss_10.2.7,pci_dss_10.6.1,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104032: Base64-encoded command execution.
+       Commonly used to obfuscate payloads. Covers bash, python, perl, and PowerShell. -->
+  <rule id="104032" level="13">
+    <if_group>syscheck|sysmon|ossec</if_group>
+    <match type="pcre2">(?i)(base64\s+(-d|--decode)\s*\|.*sh\b|echo\s+[A-Za-z0-9+/=]{20,}\s*\|\s*base64|python[23]?\s+-c\s+.*b64decode|perl\s+-.*decode_base64|powershell\s+.*-[eE]nc[odedComman]*\s+[A-Za-z0-9+/=]{20,})</match>
+    <description>Base64-encoded command execution detected on $(hostname).</description>
+    <mitre>
+      <id>T1059</id>
+      <id>T1027</id>
+    </mitre>
+    <group>command_execution,evasion,pci_dss_10.2.7,pci_dss_10.6.1,pci_dss_11.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104033: Suspicious file download to unusual paths.
+       wget or curl writing files to /tmp, /var/tmp, /dev/shm, or dotfiles. -->
+  <rule id="104033" level="11">
+    <if_group>syscheck|sysmon|ossec</if_group>
+    <match type="pcre2">(?i)(wget|curl)\s+.*(-O|-o|--output)\s*(/tmp/|/var/tmp/|/dev/shm/|\./\.)</match>
+    <description>Suspicious file download to temp/hidden path on $(hostname).</description>
+    <mitre>
+      <id>T1059</id>
+      <id>T1105</id>
+    </mitre>
+    <group>command_execution,pci_dss_10.2.7,pci_dss_10.6.1,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- ============================================================
+       Web Attacks (104040-104049)
+       ============================================================ -->
+
+  <!-- 104040: SQL injection attempt.
+       Detects common SQLi patterns in web requests.
+       Built-in rules 31100-31199 cover web server events. -->
+  <rule id="104040" level="12">
+    <if_group>web|accesslog|apache|nginx</if_group>
+    <url type="pcre2">(?i)(union\s+(all\s+)?select|or\s+1\s*=\s*1|and\s+1\s*=\s*1|&apos;\s*(or|and)\s+&apos;|;\s*(drop|alter|insert|delete|update)\s+|sleep\s*\(\s*\d+\s*\)|benchmark\s*\(|load_file\s*\(|into\s+outfile|into\s+dumpfile)</url>
+    <description>SQL injection attempt from $(srcip) on $(url).</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>web,attack,sqli,pci_dss_6.5.1,pci_dss_11.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104041: Cross-site scripting (XSS) attempt. -->
+  <rule id="104041" level="11">
+    <if_group>web|accesslog|apache|nginx</if_group>
+    <url type="pcre2">(?i)(&lt;\s*script|javascript\s*:|onerror\s*=|onload\s*=|onmouseover\s*=|onfocus\s*=|&lt;\s*img[^&gt;]+onerror|&lt;\s*svg[^&gt;]+onload|&lt;\s*iframe|alert\s*\(|document\.cookie|document\.location)</url>
+    <description>XSS attempt from $(srcip) on $(url).</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>web,attack,xss,pci_dss_6.5.7,pci_dss_11.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104042: Path traversal attempt. -->
+  <rule id="104042" level="11">
+    <if_group>web|accesslog|apache|nginx</if_group>
+    <url type="pcre2">(?i)(\.\.\/|\.\.%2[fF]|\.\.\\|%2e%2e%2f|%2e%2e\/|\/etc\/passwd|\/etc\/shadow|\/proc\/self|\/windows\/system32)</url>
+    <description>Path traversal attempt from $(srcip) on $(url).</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>web,attack,pci_dss_6.5.8,pci_dss_11.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104043: Web scanner detection.
+       High frequency of 404/403 responses from the same source.
+       Built-in rule 31101 = web server 404, 31104 = web server 403. -->
+  <rule id="104043" level="11" frequency="12" timeframe="60">
+    <if_matched_sid>31101</if_matched_sid>
+    <same_srcip />
+    <description>Web scanner detected: $(srcip) triggered 12+ 404 errors in 60s.</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1046</id>
+    </mitre>
+    <group>web,recon,pci_dss_11.4,pci_dss_6.5.8,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 104044: Command injection in web requests.
+       Detects shell metacharacters in URLs/parameters. -->
+  <rule id="104044" level="13">
+    <if_group>web|accesslog|apache|nginx</if_group>
+    <url type="pcre2">(?i)(;\s*(ls|cat|id|whoami|uname|pwd|wget|curl|nc|bash|sh|python|perl|ruby)\b|\|\s*(ls|cat|id|whoami|uname|bash|sh)\b|`[^`]*(ls|cat|id|whoami|uname)`|\$\(.*\)|%0[aAdD])\b</url>
+    <description>Command injection attempt from $(srcip) on $(url).</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>
+    </mitre>
+    <group>web,attack,command_injection,pci_dss_6.5.1,pci_dss_11.4,gdpr_IV_35.7.d,</group>
+  </rule>
+
+</group>

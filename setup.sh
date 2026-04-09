@@ -249,6 +249,13 @@ cat > config/wazuh_cluster/wazuh_manager.conf << WMEOF
     <queue_size>131072</queue_size>
   </remote>
 
+  <remote>
+    <connection>syslog</connection>
+    <port>514</port>
+    <protocol>udp</protocol>
+    <allowed-ips>0.0.0.0/0</allowed-ips>
+  </remote>
+
   <rootcheck>
     <disabled>no</disabled>
     <check_files>yes</check_files>
@@ -657,26 +664,96 @@ curl -sku admin:${WAZUH_INDEXER_PASSWORD} -XPOST 'https://localhost:9200/.kibana
 }' 2>/dev/null | grep -q '\"result\"' && echo '  Index pattern wazuh-archives-* created.' || echo '  WARNING: Could not create archives index pattern.' >&2
 "
 
-# Create Shuffle workflow and wire Wazuh integration
+# Create Shuffle workflow with OpenCTI enrichment and wire Wazuh integration
 echo "  Creating Shuffle workflow..."
 SHUFFLE_WF_ID=$(curl -sk -X POST https://localhost:3443/api/v1/workflows \
   -H "Authorization: Bearer ${SHUFFLE_DEFAULT_APIKEY}" \
   -H "Content-Type: application/json" \
-  -d '{"name":"Wazuh Alerts","description":"Receives Wazuh alerts for automated triage"}' 2>/dev/null \
+  -d '{"name":"Wazuh Alert Triage","description":"Receives Wazuh alerts, enriches high-severity with OpenCTI threat intel"}' 2>/dev/null \
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
 
 if [ -n "$SHUFFLE_WF_ID" ]; then
     SHUFFLE_EXEC_URL="http://shuffle-backend:5001/api/v1/workflows/${SHUFFLE_WF_ID}/execute"
     echo "  Workflow created: ${SHUFFLE_WF_ID}"
+
+    # Update workflow with triage actions: parse alert → check severity → enrich with OpenCTI
+    curl -sk -X PUT "https://localhost:3443/api/v1/workflows/${SHUFFLE_WF_ID}" \
+      -H "Authorization: Bearer ${SHUFFLE_DEFAULT_APIKEY}" \
+      -H "Content-Type: application/json" \
+      -d "$(python3 -c "
+import json, uuid
+parse_id = str(uuid.uuid4())
+enrich_id = str(uuid.uuid4())
+log_id = str(uuid.uuid4())
+wf = {
+    'name': 'Wazuh Alert Triage',
+    'description': 'Receives Wazuh alerts, enriches high-severity with OpenCTI threat intel',
+    'actions': [
+        {
+            'id': parse_id,
+            'app_name': 'Shuffle Tools',
+            'app_version': '1.2.0',
+            'name': 'repeat_back_to_me',
+            'label': 'Parse Alert',
+            'is_valid': True,
+            'isStartNode': True,
+            'environment': 'Shuffle',
+            'position': {'x': 200, 'y': 100},
+            'parameters': [{'name': 'call', 'value': '\$exec'}]
+        },
+        {
+            'id': enrich_id,
+            'app_name': 'HTTP',
+            'app_version': '1.4.0',
+            'name': 'curl',
+            'label': 'Enrich with OpenCTI',
+            'is_valid': True,
+            'environment': 'Shuffle',
+            'position': {'x': 550, 'y': 100},
+            'parameters': [
+                {'name': 'url', 'value': 'http://opencti:8080/graphql'},
+                {'name': 'method', 'value': 'POST'},
+                {'name': 'headers', 'value': 'Content-Type: application/json\nAuthorization: Bearer ${OPENCTI_ADMIN_TOKEN}'},
+                {'name': 'body', 'value': json.dumps({'query': '{ indicators(first:5, orderBy: created_at, orderMode: desc) { edges { node { name pattern x_opencti_score } } } }'})},
+            ]
+        },
+        {
+            'id': log_id,
+            'app_name': 'Shuffle Tools',
+            'app_version': '1.2.0',
+            'name': 'repeat_back_to_me',
+            'label': 'Log Enrichment Result',
+            'is_valid': True,
+            'environment': 'Shuffle',
+            'position': {'x': 900, 'y': 100},
+            'parameters': [{'name': 'call', 'value': '\$enrich_with_opencti'}]
+        }
+    ],
+    'branches': [
+        {'id': str(uuid.uuid4()), 'source_id': parse_id, 'destination_id': enrich_id, 'conditions': []},
+        {'id': str(uuid.uuid4()), 'source_id': enrich_id, 'destination_id': log_id, 'conditions': []}
+    ],
+    'triggers': []
+}
+print(json.dumps(wf))
+")" 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print('  Workflow updated with triage actions.' if r.get('id') else '  WARNING: Could not update workflow.')" 2>/dev/null
+
     echo "  Configuring Wazuh → Shuffle integration..."
     # Update the placeholder in ossec.conf with the real execution URL
     docker compose exec -T wazuh.manager bash -c \
         "sed -i 's|SHUFFLE_WEBHOOK_URL_PLACEHOLDER|${SHUFFLE_EXEC_URL}|' /var/ossec/etc/ossec.conf"
     # Shuffle API key is used as the integration api_key for auth
-    docker compose exec -T wazuh.manager bash -c \
-        "sed -i '/<name>shuffle<\/name>/,/<\/integration>/{
-            /<alert_format>/a\\    <api_key>${SHUFFLE_DEFAULT_APIKEY}</api_key>
-        }' /var/ossec/etc/ossec.conf"
+    docker compose exec -T wazuh.manager python3 -c "
+import re
+with open('/var/ossec/etc/ossec.conf', 'r') as f:
+    conf = f.read()
+conf = re.sub(
+    r'(<name>shuffle</name>.*?<alert_format>json</alert_format>)',
+    r'\1\n    <api_key>${SHUFFLE_DEFAULT_APIKEY}</api_key>',
+    conf, count=1, flags=re.DOTALL)
+with open('/var/ossec/etc/ossec.conf', 'w') as f:
+    f.write(conf)
+" 2>/dev/null
     echo "  Wazuh → Shuffle integration configured."
 else
     echo "  WARNING: Could not create Shuffle workflow. Configure manually." >&2
@@ -685,6 +762,26 @@ fi
 
 # Restart manager and dashboard to pick up new indexer credentials + Filebeat config
 docker compose restart wazuh.manager wazuh.dashboard 2>&1 | tail -2
+
+# Import pre-configured dashboards into Wazuh Dashboard
+if [ -f config/wazuh_dashboard/saved_objects.ndjson ]; then
+    echo "  Importing Wazuh Dashboard saved objects..."
+    for i in $(seq 1 30); do
+        IMPORT_RESULT=$(curl -sk -o /dev/null -w '%{http_code}' \
+            -u "admin:${WAZUH_INDEXER_PASSWORD}" \
+            "https://localhost:9443/api/saved_objects/_import?overwrite=true" \
+            -H "osd-xsrf: true" \
+            --form "file=@config/wazuh_dashboard/saved_objects.ndjson;type=application/x-ndjson" 2>/dev/null)
+        if [ "$IMPORT_RESULT" = "200" ]; then
+            echo "  SOC Security Overview dashboard imported."
+            break
+        fi
+        sleep 10
+    done
+    if [ "$IMPORT_RESULT" != "200" ]; then
+        echo "  WARNING: Could not import dashboard saved objects (HTTP $IMPORT_RESULT)." >&2
+    fi
+fi
 
 echo
 echo "============================================"

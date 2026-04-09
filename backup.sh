@@ -39,6 +39,13 @@ VOLUMES=(
     wazuh_queue
     wazuh_etc
     wazuh_api_configuration
+    wazuh_var_multigroups
+    wazuh_integrations
+    wazuh_active_response
+    wazuh_agentless
+    wazuh_wodles
+    filebeat_etc
+    filebeat_var
     shuffle-opensearch-data
     shuffle-files
 )
