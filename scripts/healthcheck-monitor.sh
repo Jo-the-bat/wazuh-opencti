@@ -16,6 +16,11 @@
 
 set -euo pipefail
 
+if ! command -v jq >/dev/null 2>&1; then
+    echo "ERROR: jq is required by this script (apt install jq / brew install jq)" >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 

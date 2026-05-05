@@ -57,8 +57,9 @@ Production-ready Docker Compose deployment of a complete security operations sta
 
 ### Prerequisites
 
-- Docker with Compose v2
-- 32 GB RAM minimum (recommended)
+- Docker Engine 20.10+ with the `docker compose` plugin (Compose v2.x or later)
+- Host tools: `bash`, `curl`, `openssl`, `jq` — used by `setup.sh`, the smoke test, and the healthcheck monitor (`apt install jq` / `brew install jq` if missing)
+- 32 GB RAM minimum, ~40 GB recommended (the full stack reserves ~34 GB across containers — see [Resource Requirements](#resource-requirements))
 - `vm.max_map_count >= 262144`:
   ```bash
   # Check current value
@@ -82,11 +83,21 @@ bash setup.sh
 
 > **Note**: Optional connector profiles (AlienVault, AbuseIPDB, CVE) will show warnings about unset API keys during startup — this is normal and can be ignored unless you plan to enable them.
 
-Verify the deployment is working (wait ~1 minute after setup for all healthchecks to pass):
+> **Note**: `setup.sh` may print `WARNING: Could not update workflow` during the Shuffle step. This is cosmetic — the workflow is created and Wazuh→Shuffle forwarding works (verified by the smoke test); only the in-place workflow content update is skipped.
+
+> **Important**: credentials are printed once at the end of `setup.sh`. Copy them, or retrieve them later with `grep -E 'PASSWORD|TOKEN|OPENCTI_ADMIN_EMAIL' .env`.
+
+Verify the deployment is working. Wait until every container shows `(healthy)` — count on **2–3 minutes** after `setup.sh` returns (the Wazuh dashboard is the slowest to come up):
 
 ```bash
+# Watch healthchecks settle
+docker compose ps
+
+# Run the smoke test once everything is healthy
 bash scripts/test-deployment.sh
 ```
+
+If the test reports a transient failure such as `wazuh.dashboard health: starting`, wait another minute and re-run it.
 
 ### Access
 
@@ -124,7 +135,7 @@ If automatic configuration fails (check setup output for warnings), you can conf
 2. Create a new workflow with a **Webhook** trigger
 3. Save and **Start** the workflow
 4. Copy the generated webhook URL
-5. Run the helper script:
+5. Run the helper script with the **external** URL shown in the Shuffle UI (e.g. `https://localhost:3443/api/v1/hooks/<id>`); the script rewrites it to the internal Docker URL automatically:
    ```bash
    bash scripts/configure-shuffle.sh <webhook-url>
    ```
@@ -254,7 +265,7 @@ msiexec.exe /i wazuh-agent.msi /q WAZUH_MANAGER='<your-server-ip>' WAZUH_REGISTR
 net start Wazuh
 ```
 
-Replace `<your-server-ip>` with the host running this stack. Agents connect on ports 1514 (events) and 1515 (enrollment).
+Replace `<your-server-ip>` with the host running this stack. Agents connect on ports **1514/tcp** (events) and **1515/tcp** (enrollment). For non-agent log sources (firewalls, network devices, syslog forwarders), forward syslog to **514/udp** instead.
 
 ## Let's Encrypt Certificates
 
@@ -376,7 +387,7 @@ Created by `setup.sh`, never committed:
 
 ### Custom TLS Certificates
 
-To use your own certificates instead of self-signed:
+`setup.sh` generates self-signed certificates with CN=`localhost` (the default value of `OPENCTI_HOSTNAME` in `.env`), which is fine for local use. To use your own certificates instead:
 
 1. Place your cert and key at `config/nginx/ssl/opencti.crt` and `config/nginx/ssl/opencti.key`
 2. Set `OPENCTI_HOSTNAME` in `.env` to match your certificate CN
@@ -391,6 +402,10 @@ bash setup.sh
 # Start/stop
 docker compose up -d
 docker compose down
+
+# Cleanup orphan Shuffle worker containers — orborus spawns these outside
+# the compose project, so `docker compose down` does not remove them
+docker ps -aq --filter name=worker- | xargs -r docker rm -f
 
 # Enable optional connectors
 docker compose --profile alienvault up -d
