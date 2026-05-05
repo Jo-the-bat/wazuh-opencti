@@ -245,6 +245,24 @@ sock.close()
             echo "  PASS  Full pipeline: event → decoder → integratord → OpenCTI → alert (rule 100212)"
             ((PASS++))
 
+            # Active response: rule 100212 (group `opencti_alert`) is wired to
+            # firewall-drop in ossec.conf. After the alert fires, the AR module
+            # writes to /var/ossec/logs/active-responses.log. We accept any
+            # firewall-drop line (URL-type IOCs cannot extract srcip and the
+            # AR will log "Cannot read 'srcip' from data" — that still proves
+            # the AR is wired and triggered).
+            if docker compose exec -T wazuh.manager bash -c "
+                test -f /var/ossec/logs/active-responses.log && \
+                tail -50 /var/ossec/logs/active-responses.log | \
+                    grep -q 'active-response/bin/firewall-drop'
+            " 2>/dev/null; then
+                echo "  PASS  Active response: firewall-drop invoked on OpenCTI IoC alert"
+                ((PASS++))
+            else
+                echo "  FAIL  Active response: no firewall-drop entry after rule 100212 fired"
+                ((FAIL++))
+            fi
+
             # Check that the OpenCTI alert (level 12) also triggered Shuffle.
             # We require a *successful* forward (HTTP 2xx) — counting log lines
             # alone gives false positives when shuffle.py POSTs without auth and
@@ -271,6 +289,117 @@ sock.close()
     fi
 else
     warn "Skipping pipeline test (no indicators loaded yet)"
+fi
+
+# --- 9b. Indexer operational state (templates, lifecycle policies) ---
+echo "--- Indexer Operational State ---"
+
+# ISM lifecycle policies — claim: hot→warm→delete for alerts/archives/monitoring
+ISM_POLICIES=$(docker compose exec -T -e PW="${WAZUH_INDEXER_PASSWORD}" wazuh.indexer \
+    bash -c 'curl -sk -u "admin:$PW" "https://localhost:9200/_plugins/_ism/policies"' 2>/dev/null \
+    | python3 -c "import sys,json; print('\n'.join(p['policy']['policy_id'] for p in json.load(sys.stdin).get('policies',[])))" 2>/dev/null \
+    | sort | tr '\n' ',' | sed 's/,$//')
+EXPECTED_ISM="wazuh-alerts-lifecycle,wazuh-archives-lifecycle,wazuh-monitoring-lifecycle"
+if [ "$ISM_POLICIES" = "$EXPECTED_ISM" ]; then
+    echo "  PASS  ISM lifecycle policies present (alerts, archives, monitoring)"
+    ((PASS++))
+else
+    echo "  FAIL  ISM lifecycle policies mismatch"
+    echo "         expected: $EXPECTED_ISM"
+    echo "         got:      $ISM_POLICIES"
+    ((FAIL++))
+fi
+
+# Index template wazuh-shards — claim: order=1, shards=1
+SHARDS_TPL=$(docker compose exec -T -e PW="${WAZUH_INDEXER_PASSWORD}" wazuh.indexer \
+    bash -c 'curl -sk -u "admin:$PW" "https://localhost:9200/_template/wazuh-shards"' 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    t = json.load(sys.stdin)['wazuh-shards']
+    print('%s|%s' % (t.get('order'), t.get('settings',{}).get('index',{}).get('number_of_shards')))
+except Exception:
+    pass
+" 2>/dev/null)
+if [ "$SHARDS_TPL" = "1|1" ]; then
+    echo "  PASS  Index template wazuh-shards: order=1, shards=1"
+    ((PASS++))
+else
+    echo "  FAIL  Index template wazuh-shards missing or misconfigured (got: $SHARDS_TPL)"
+    ((FAIL++))
+fi
+
+# Actual shard count on today's wazuh-* indices — claim: 1 shard per index
+WRONG_SHARDS=$(docker compose exec -T -e PW="${WAZUH_INDEXER_PASSWORD}" wazuh.indexer \
+    bash -c 'curl -sk -u "admin:$PW" "https://localhost:9200/_cat/indices/wazuh-alerts-4.x-*,wazuh-archives-4.x-*?format=json"' 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    indices = json.load(sys.stdin)
+except Exception:
+    indices = []
+bad = [i['index'] for i in indices if int(i.get('pri') or 1) != 1]
+print(','.join(bad))
+" 2>/dev/null)
+if [ -z "$WRONG_SHARDS" ]; then
+    echo "  PASS  All wazuh-{alerts,archives}-4.x-* indices have 1 shard"
+    ((PASS++))
+else
+    echo "  FAIL  Indices with shards != 1: $WRONG_SHARDS"
+    ((FAIL++))
+fi
+
+# Threat-intel connectors active by name — beyond the count check above
+EXPECTED_CONNECTORS="MITRE ATT&CK,URLhaus,CISA KEV,ThreatFox,OpenCTI Datasets,VX Vault,DISARM Framework"
+MISSING_CONNECTORS=$(curl -sk -X POST https://localhost:8443/graphql \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
+    -d '{"query":"{ connectors { name active } }"}' 2>/dev/null \
+    | python3 -c "
+import sys, json
+expected = set('''$EXPECTED_CONNECTORS'''.split(','))
+got = {c['name'] for c in json.load(sys.stdin)['data']['connectors'] if c['active']}
+missing = sorted(expected - got)
+print(','.join(missing))
+" 2>/dev/null)
+if [ -z "$MISSING_CONNECTORS" ]; then
+    echo "  PASS  All 7 expected threat-intel connectors active by name"
+    ((PASS++))
+else
+    echo "  FAIL  Missing/inactive threat-intel connectors: $MISSING_CONNECTORS"
+    ((FAIL++))
+fi
+
+# OpenCTI → Wazuh enrichment connector — distinct from the ingestion ones
+WAZUH_ENRICH_ACTIVE=$(curl -sk -X POST https://localhost:8443/graphql \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
+    -d '{"query":"{ connectors { name active } }"}' 2>/dev/null \
+    | python3 -c "
+import sys, json
+print(any(c['name']=='Wazuh' and c['active'] for c in json.load(sys.stdin)['data']['connectors']))
+" 2>/dev/null)
+if [ "$WAZUH_ENRICH_ACTIVE" = "True" ]; then
+    echo "  PASS  OpenCTI → Wazuh enrichment connector active"
+    ((PASS++))
+else
+    echo "  FAIL  OpenCTI → Wazuh enrichment connector not active"
+    ((FAIL++))
+fi
+
+# --- 9c. Operational tooling ---
+echo "--- Operational Tooling ---"
+
+# healthcheck-monitor.sh: should exit 0 when stack is healthy and report N/N
+MONITOR_OUT=$(bash scripts/healthcheck-monitor.sh 2>&1)
+MONITOR_EXIT=$?
+if [ "$MONITOR_EXIT" -eq 0 ] && echo "$MONITOR_OUT" | grep -qE 'Stack health: ([0-9]+)/\1 healthy'; then
+    echo "  PASS  healthcheck-monitor.sh reports all healthy and exits 0"
+    ((PASS++))
+else
+    echo "  FAIL  healthcheck-monitor.sh did not report all-healthy / exit 0"
+    echo "         output: $MONITOR_OUT"
+    ((FAIL++))
 fi
 
 # --- 10. Shuffle SOAR pipeline test ---

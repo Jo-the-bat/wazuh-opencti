@@ -569,6 +569,37 @@ curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_templa
 }' 2>/dev/null | grep -q 'acknowledged' || echo '  WARNING: Could not create monitoring index template.' >&2
 "
 
+# Filebeat starts pushing as soon as wazuh.manager is up (step 8) — earlier
+# than the wazuh-shards template can be applied here. So today's
+# wazuh-{alerts,archives}-4.x-* indices may already exist with the legacy
+# 3-shard template's settings. Reset them so Filebeat recreates them with
+# the 1-shard template. Guarded by a low doc-count threshold to avoid
+# nuking real data on subsequent setup.sh re-runs.
+docker compose exec -T -e PW="${WAZUH_INDEXER_PASSWORD}" wazuh.indexer python3 - <<'PYEOF' || true
+import os, json, ssl, base64, urllib.request
+auth = base64.b64encode(b'admin:' + os.environ['PW'].encode()).decode()
+ctx = ssl._create_unverified_context()
+def api(path, method='GET'):
+    req = urllib.request.Request('https://localhost:9200' + path, method=method)
+    req.add_header('Authorization', 'Basic ' + auth)
+    return urllib.request.urlopen(req, context=ctx, timeout=10).read()
+try:
+    raw = api('/_cat/indices/wazuh-alerts-4.x-*,wazuh-archives-4.x-*?format=json')
+    indices = json.loads(raw)
+except Exception as e:
+    print('  Skipping shard-fix probe (%s)' % e)
+    raise SystemExit
+reset = 0
+for idx in indices:
+    pri = int(idx.get('pri') or 1)
+    docs = int((idx.get('docs.count') or '0') or 0)
+    if pri != 1 and docs < 10000:
+        api('/' + idx['index'], method='DELETE')
+        reset += 1
+if reset:
+    print('  Reset %d fresh index(es) so the 1-shard template applies.' % reset)
+PYEOF
+
 # Apply index lifecycle policies (hot → warm → delete)
 echo "  Applying index lifecycle policies..."
 
