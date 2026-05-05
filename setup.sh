@@ -570,86 +570,39 @@ curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_templa
 
 # Apply index lifecycle policies (hot → warm → delete)
 echo "  Applying index lifecycle policies..."
+
+# Helper: create ISM policy only if it doesn't already exist
+apply_ism_policy() {
+  local POLICY_NAME="$1" POLICY_JSON="$2" LABEL="$3"
+  docker compose exec -T wazuh.indexer bash -c "
+    STATUS=\$(curl -sku admin:${WAZUH_INDEXER_PASSWORD} -o /dev/null -w '%{http_code}' \
+      'https://localhost:9200/_plugins/_ism/policies/${POLICY_NAME}' 2>/dev/null)
+    if [ \"\$STATUS\" = '200' ]; then
+      echo '  ${LABEL} (already exists).'
+    else
+      curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT \
+        'https://localhost:9200/_plugins/_ism/policies/${POLICY_NAME}' \
+        -H 'Content-Type: application/json' -d '${POLICY_JSON}' 2>/dev/null \
+        | grep -q 'policy_id' && echo '  ${LABEL}.' \
+        || echo '  WARNING: Could not apply ${POLICY_NAME} policy.' >&2
+    fi
+  "
+}
+
 # Alerts: hot 90d → warm → delete at 1 year
-docker compose exec -T wazuh.indexer bash -c "
-curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugins/_ism/policies/wazuh-alerts-lifecycle' \
-  -H 'Content-Type: application/json' -d '{
-  \"policy\": {
-    \"description\": \"Wazuh alerts: hot 90d, warm, delete at 1 year\",
-    \"default_state\": \"hot\",
-    \"states\": [
-      {
-        \"name\": \"hot\",
-        \"transitions\": [{\"state_name\": \"warm\", \"conditions\": {\"min_index_age\": \"90d\"}}]
-      },
-      {
-        \"name\": \"warm\",
-        \"actions\": [{\"read_only\": {}}],
-        \"transitions\": [{\"state_name\": \"delete\", \"conditions\": {\"min_index_age\": \"365d\"}}]
-      },
-      {
-        \"name\": \"delete\",
-        \"actions\": [{\"delete\": {}}]
-      }
-    ],
-    \"ism_template\": [
-      {\"index_patterns\": [\"wazuh-alerts-*\"], \"priority\": 100}
-    ]
-  }
-}' 2>/dev/null | grep -q 'policy_id' && echo '  Alerts lifecycle: hot 90d → warm → delete 1y.' || echo '  WARNING: Could not apply alerts lifecycle policy.' >&2
-"
+apply_ism_policy "wazuh-alerts-lifecycle" \
+  "{\"policy\":{\"description\":\"Wazuh alerts: hot 90d, warm, delete at 1 year\",\"default_state\":\"hot\",\"states\":[{\"name\":\"hot\",\"transitions\":[{\"state_name\":\"warm\",\"conditions\":{\"min_index_age\":\"90d\"}}]},{\"name\":\"warm\",\"actions\":[{\"read_only\":{}}],\"transitions\":[{\"state_name\":\"delete\",\"conditions\":{\"min_index_age\":\"365d\"}}]},{\"name\":\"delete\",\"actions\":[{\"delete\":{}}]}],\"ism_template\":[{\"index_patterns\":[\"wazuh-alerts-*\"],\"priority\":100}]}}" \
+  "Alerts lifecycle: hot 90d → warm → delete 1y"
+
 # Archives: hot 90d → warm → delete at 1 year
-docker compose exec -T wazuh.indexer bash -c "
-curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugins/_ism/policies/wazuh-archives-lifecycle' \
-  -H 'Content-Type: application/json' -d '{
-  \"policy\": {
-    \"description\": \"Wazuh archives: hot 90d, warm, delete at 1 year\",
-    \"default_state\": \"hot\",
-    \"states\": [
-      {
-        \"name\": \"hot\",
-        \"transitions\": [{\"state_name\": \"warm\", \"conditions\": {\"min_index_age\": \"90d\"}}]
-      },
-      {
-        \"name\": \"warm\",
-        \"actions\": [{\"read_only\": {}}],
-        \"transitions\": [{\"state_name\": \"delete\", \"conditions\": {\"min_index_age\": \"365d\"}}]
-      },
-      {
-        \"name\": \"delete\",
-        \"actions\": [{\"delete\": {}}]
-      }
-    ],
-    \"ism_template\": [
-      {\"index_patterns\": [\"wazuh-archives-*\"], \"priority\": 100}
-    ]
-  }
-}' 2>/dev/null | grep -q 'policy_id' && echo '  Archives lifecycle: hot 90d → warm → delete 1y.' || echo '  WARNING: Could not apply archives lifecycle policy.' >&2
-"
+apply_ism_policy "wazuh-archives-lifecycle" \
+  "{\"policy\":{\"description\":\"Wazuh archives: hot 90d, warm, delete at 1 year\",\"default_state\":\"hot\",\"states\":[{\"name\":\"hot\",\"transitions\":[{\"state_name\":\"warm\",\"conditions\":{\"min_index_age\":\"90d\"}}]},{\"name\":\"warm\",\"actions\":[{\"read_only\":{}}],\"transitions\":[{\"state_name\":\"delete\",\"conditions\":{\"min_index_age\":\"365d\"}}]},{\"name\":\"delete\",\"actions\":[{\"delete\":{}}]}],\"ism_template\":[{\"index_patterns\":[\"wazuh-archives-*\"],\"priority\":100}]}}" \
+  "Archives lifecycle: hot 90d → warm → delete 1y"
+
 # Monitoring/Statistics: delete after 30 days (no warm, low-value data)
-docker compose exec -T wazuh.indexer bash -c "
-curl -sku admin:${WAZUH_INDEXER_PASSWORD} -X PUT 'https://localhost:9200/_plugins/_ism/policies/wazuh-monitoring-lifecycle' \
-  -H 'Content-Type: application/json' -d '{
-  \"policy\": {
-    \"description\": \"Wazuh monitoring/statistics: delete after 30 days\",
-    \"default_state\": \"hot\",
-    \"states\": [
-      {
-        \"name\": \"hot\",
-        \"transitions\": [{\"state_name\": \"delete\", \"conditions\": {\"min_index_age\": \"30d\"}}]
-      },
-      {
-        \"name\": \"delete\",
-        \"actions\": [{\"delete\": {}}]
-      }
-    ],
-    \"ism_template\": [
-      {\"index_patterns\": [\"wazuh-monitoring-*\"], \"priority\": 100},
-      {\"index_patterns\": [\"wazuh-statistics-*\"], \"priority\": 100}
-    ]
-  }
-}' 2>/dev/null | grep -q 'policy_id' && echo '  Monitoring lifecycle: delete after 30d.' || echo '  WARNING: Could not apply monitoring lifecycle policy.' >&2
-"
+apply_ism_policy "wazuh-monitoring-lifecycle" \
+  "{\"policy\":{\"description\":\"Wazuh monitoring/statistics: delete after 30 days\",\"default_state\":\"hot\",\"states\":[{\"name\":\"hot\",\"transitions\":[{\"state_name\":\"delete\",\"conditions\":{\"min_index_age\":\"30d\"}}]},{\"name\":\"delete\",\"actions\":[{\"delete\":{}}]}],\"ism_template\":[{\"index_patterns\":[\"wazuh-monitoring-*\"],\"priority\":100},{\"index_patterns\":[\"wazuh-statistics-*\"],\"priority\":100}]}}" \
+  "Monitoring lifecycle: delete after 30d"
 
 # Create wazuh-archives index pattern so archives are browsable in Dashboard > Discover
 echo "  Creating wazuh-archives index pattern..."
@@ -761,7 +714,8 @@ else
 fi
 
 # Restart manager and dashboard to pick up new indexer credentials + Filebeat config
-docker compose restart wazuh.manager wazuh.dashboard 2>&1 | tail -2
+# Also restart nginx to refresh upstream DNS cache (IPs may change after container recreation)
+docker compose restart wazuh.manager wazuh.dashboard nginx 2>&1 | tail -3
 
 # Import pre-configured dashboards into Wazuh Dashboard
 if [ -f config/wazuh_dashboard/saved_objects.ndjson ]; then
@@ -771,7 +725,7 @@ if [ -f config/wazuh_dashboard/saved_objects.ndjson ]; then
             -u "admin:${WAZUH_INDEXER_PASSWORD}" \
             "https://localhost:9443/api/saved_objects/_import?overwrite=true" \
             -H "osd-xsrf: true" \
-            --form "file=@config/wazuh_dashboard/saved_objects.ndjson;type=application/x-ndjson" 2>/dev/null)
+            --form "file=@config/wazuh_dashboard/saved_objects.ndjson;type=application/x-ndjson" 2>/dev/null) || true
         if [ "$IMPORT_RESULT" = "200" ]; then
             echo "  SOC Security Overview dashboard imported."
             break

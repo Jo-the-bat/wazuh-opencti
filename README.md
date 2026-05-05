@@ -42,7 +42,7 @@ Production-ready Docker Compose deployment of a complete security operations sta
         +-------------+
 ```
 
-**26 default containers** + 8 optional (3 API-key connectors + 3 monitoring + 2 Suricata IDS):
+**28 default containers** + 8 optional (3 API-key connectors + 3 monitoring + 2 Suricata IDS):
 
 | Component | Services | Purpose |
 |-----------|----------|---------|
@@ -61,9 +61,14 @@ Production-ready Docker Compose deployment of a complete security operations sta
 - 32 GB RAM minimum (recommended)
 - `vm.max_map_count >= 262144`:
   ```bash
+  # Check current value
+  cat /proc/sys/vm/max_map_count
+
+  # Set it (requires root)
   sudo sysctl -w vm.max_map_count=1048575
   echo "vm.max_map_count=1048575" | sudo tee -a /etc/sysctl.conf
   ```
+  > **Note**: On some systems, `sysctl` is in `/usr/sbin/` and may not be in your PATH. Use the full path `/usr/sbin/sysctl` or check the value via `/proc/sys/vm/max_map_count`.
 
 ### Deploy
 
@@ -73,9 +78,11 @@ cd wazuh-opencti
 bash setup.sh
 ```
 
-`setup.sh` handles everything: generates random passwords, creates TLS certificates, starts all services, and initializes Wazuh security. It's idempotent — safe to re-run.
+`setup.sh` handles everything: generates random passwords, creates TLS certificates, starts all services, and initializes Wazuh security. It's idempotent — safe to re-run. On first run, credentials are printed at the end; on subsequent runs, existing secrets in `.env` are preserved.
 
-Verify the deployment is working:
+> **Note**: Optional connector profiles (AlienVault, AbuseIPDB, CVE) will show warnings about unset API keys during startup — this is normal and can be ignored unless you plan to enable them.
+
+Verify the deployment is working (wait ~1 minute after setup for all healthchecks to pass):
 
 ```bash
 bash scripts/test-deployment.sh
@@ -89,7 +96,11 @@ bash scripts/test-deployment.sh
 | OpenCTI | `https://localhost:8443` | admin@opencti.io / (from setup output) |
 | Shuffle SOAR | `https://localhost:3443` | admin / (from setup output) |
 
-All passwords are in `.env` (gitignored, generated per deployment).
+All passwords are in `.env` (gitignored, generated per deployment). You can also view them with:
+
+```bash
+grep -E 'PASSWORD|TOKEN|OPENCTI_ADMIN_EMAIL' .env
+```
 
 ## Integrations
 
@@ -103,9 +114,11 @@ Bidirectional enrichment works out of the box:
 
 3. **Active Response**: When an IOC is confirmed by OpenCTI (level 12), Wazuh automatically blocks the source IP via `firewall-drop` for 30 minutes. Also auto-blocks brute-force attackers (1 hour) and high-severity IDS alerts (30 minutes). All blocks auto-expire.
 
-### Wazuh -> Shuffle (manual setup)
+### Wazuh -> Shuffle (automatic)
 
-Connect Wazuh alerts to Shuffle for automated response workflows:
+The Wazuh-to-Shuffle integration is **automatically configured** by `setup.sh`: it creates a "Wazuh Alert Triage" workflow and wires Wazuh integratord to send level 3+ alerts to Shuffle via direct workflow execution.
+
+If automatic configuration fails (check setup output for warnings), you can configure it manually:
 
 1. Log in to Shuffle at `https://localhost:3443`
 2. Create a new workflow with a **Webhook** trigger
@@ -304,7 +317,7 @@ Shuffle requires `/var/run/docker.sock` mounted on `shuffle-backend` and `shuffl
 
 ## Reliability
 
-- **Healthchecks** on every service (26 containers)
+- **Healthchecks** on every service (28 containers)
 - **`depends_on` with conditions** — services wait for dependencies to be healthy before starting
 - **Resource limits** — memory caps on all services; JVM heaps and Node.js `--max-old-space-size` sized to fit
 - **Log rotation** — JSON file driver, 10 MB default (50 MB for Wazuh manager), 5 files per container

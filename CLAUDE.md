@@ -4,7 +4,7 @@
 
 Docker Compose deployment of **Wazuh** (SIEM/XDR) + **OpenCTI** (Cyber Threat Intelligence) with HTTPS, bidirectional threat intel integration, and automated threat feed ingestion.
 
-## Architecture (26 default + 8 optional containers)
+## Architecture (28 default + 8 optional containers)
 
 - **Wazuh Stack**: manager (4.14.4), indexer (OpenSearch), dashboard — mutual TLS
 - **OpenCTI Stack**: platform (6.9.28), 3 workers, Elasticsearch 8.19.13, Redis, RabbitMQ 4.2.5, MinIO
