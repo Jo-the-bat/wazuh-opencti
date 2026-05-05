@@ -141,18 +141,37 @@ check "OpenCTI proxy (:8443)" \
     curl -sk -o /dev/null https://localhost:8443/
 check "Shuffle proxy (:3443)" \
     curl -sk -o /dev/null https://localhost:3443/
-if curl -sk -I https://localhost:8443/ 2>/dev/null | grep -qi "strict-transport-security"; then
-    echo "  PASS  HSTS header present"
+NGINX_HEADERS=$(curl -sk -I https://localhost:8443/ 2>/dev/null)
+HEADERS_OK=true
+for H in "strict-transport-security" "x-frame-options" "x-content-type-options" "referrer-policy"; do
+    if ! echo "$NGINX_HEADERS" | grep -qi "^${H}:"; then
+        echo "  FAIL  Missing nginx security header: $H"
+        ((FAIL++))
+        HEADERS_OK=false
+    fi
+done
+if [ "$HEADERS_OK" = true ]; then
+    echo "  PASS  Nginx security headers present (HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy)"
     ((PASS++))
-else
-    echo "  FAIL  HSTS header present"
-    ((FAIL++))
 fi
 
 # --- 7. Wazuh Dashboard ---
 echo "--- Wazuh Dashboard ---"
 check "Dashboard reachable (:9443)" \
     curl -sk -o /dev/null https://localhost:9443/
+
+# Saved objects: setup.sh imports the SOC Security Overview dashboard via
+# /api/saved_objects/_import. Verify it actually landed in the dashboard's
+# saved objects index.
+if curl -sk -u "admin:${WAZUH_INDEXER_PASSWORD}" \
+    "https://localhost:9443/api/saved_objects/_find?type=dashboard&per_page=100" 2>/dev/null \
+    | grep -q '"id":"soc-security-overview"'; then
+    echo "  PASS  SOC Security Overview dashboard imported"
+    ((PASS++))
+else
+    echo "  FAIL  SOC Security Overview dashboard not found in saved objects"
+    ((FAIL++))
+fi
 
 # --- 8. Integration script test (direct call, validates script + API connectivity) ---
 echo "--- Integration Script Test ---"
@@ -260,6 +279,41 @@ sock.close()
                 ((PASS++))
             else
                 echo "  FAIL  Active response: no firewall-drop entry after rule 100212 fired"
+                ((FAIL++))
+            fi
+
+            # False-positive guard: a benign URL (RFC1918 host) must NOT
+            # generate a 100212+ alert. Verifies custom-opencti.py only
+            # fires on indicator matches, not on every audit_command event.
+            FP_BEFORE=$(docker compose exec -T wazuh.manager \
+                grep -cE '"id":"10021[2-5]"' /var/ossec/logs/alerts/alerts.json 2>/dev/null \
+                | tr -d '\r' | head -1)
+            FP_BEFORE=${FP_BEFORE:-0}
+            docker compose exec -T wazuh.manager python3 -c "
+from socket import socket, AF_UNIX, SOCK_DGRAM
+audit = (
+    'type=SYSCALL msg=audit(1712500999.000:99099): arch=c000003e syscall=59 '
+    'success=yes exit=0 a0=0x1 a1=0x2 a2=0x3 a3=0x4 items=2 ppid=1 pid=9999 '
+    'auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 '
+    'ses=1 comm=\"curl\" exe=\"/usr/bin/curl\" key=\"audit-wazuh-c\"'
+    ' type=EXECVE msg=audit(1712500999.000:99099): argc=2 a0=\"curl\"'
+    ' a1=\"http://192.168.42.99/benign-fp-test\"'
+)
+sock = socket(AF_UNIX, SOCK_DGRAM)
+sock.connect('/var/ossec/queue/sockets/queue')
+sock.send(('1:/var/log/audit/audit.log:' + audit).encode())
+sock.close()
+" 2>/dev/null
+            sleep 30
+            FP_AFTER=$(docker compose exec -T wazuh.manager \
+                grep -cE '"id":"10021[2-5]"' /var/ossec/logs/alerts/alerts.json 2>/dev/null \
+                | tr -d '\r' | head -1)
+            FP_AFTER=${FP_AFTER:-0}
+            if [ "$FP_AFTER" -eq "$FP_BEFORE" ]; then
+                echo "  PASS  No false positive: benign RFC1918 URL did not produce a 100212+ alert"
+                ((PASS++))
+            else
+                echo "  FAIL  False positive: benign URL injection raised 100212+ count ($FP_BEFORE → $FP_AFTER)"
                 ((FAIL++))
             fi
 
@@ -497,6 +551,19 @@ else
     ((FAIL++))
 fi
 
+# ctem-report.sh: must exit 0 and emit all 6 documented sections (Scoping,
+# Discovery, Prioritization, Threat Landscape, Mobilization, Recommendations)
+CTEM_OUT=$(bash scripts/ctem-report.sh 2>&1)
+CTEM_EXIT=$?
+CTEM_SECTIONS=$(printf '%s\n' "$CTEM_OUT" | grep -cE '^--- [1-6]\.' || true)
+if [ "$CTEM_EXIT" -eq 0 ] && [ "$CTEM_SECTIONS" -ge 6 ]; then
+    echo "  PASS  ctem-report.sh emits all 6 CTEM sections and exits 0"
+    ((PASS++))
+else
+    echo "  FAIL  ctem-report.sh: exit=$CTEM_EXIT, sections=$CTEM_SECTIONS (expected 6)"
+    ((FAIL++))
+fi
+
 # --- 10. Shuffle SOAR pipeline test ---
 echo "--- Shuffle Pipeline Test ---"
 # Find the Shuffle integration block in ossec.conf — auto-config writes
@@ -549,6 +616,24 @@ AEOF
     fi
 else
     warn "Shuffle integration not configured in ossec.conf (run setup.sh to enable)"
+fi
+
+# --- 11. Nginx rate limit (last — bursting against /graphql may briefly
+# exhaust the per-IP bucket; keeping this at the end avoids cascading failures
+# in other OpenCTI tests). The opencti_api zone is 30 r/s + burst=20 nodelay,
+# so 200 parallel requests must produce at least one HTTP 429.
+echo "--- Nginx Rate Limit ---"
+RATE_RESPONSES=$(for _ in $(seq 1 200); do
+    curl -sk -o /dev/null -w "%{http_code}\n" https://localhost:8443/graphql 2>/dev/null &
+done; wait)
+RATE_429=$(printf '%s\n' "$RATE_RESPONSES" | grep -c '^429$' || true)
+RATE_429=${RATE_429:-0}
+if [ "$RATE_429" -gt 0 ]; then
+    echo "  PASS  Nginx rate limit triggered ($RATE_429/200 requests returned 429)"
+    ((PASS++))
+else
+    echo "  FAIL  Nginx rate limit not triggered after 200 parallel requests on /graphql"
+    ((FAIL++))
 fi
 
 # --- Summary ---
