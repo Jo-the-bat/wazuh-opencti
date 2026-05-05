@@ -33,9 +33,16 @@ docker compose down 2>/dev/null || true
 echo "  Done."
 
 # --- Restore configuration ---
+# Extract via a root container (matches backup.sh) so we can overwrite the
+# root-owned files in config/wazuh_indexer_ssl_certs/ that setup.sh produced
+# from a containerized cert generator. A plain `tar xzf` from the user shell
+# fails with "file exists / operation not permitted" on those.
 echo "[2/4] Restoring configuration files..."
 if [ -f "${BACKUP_DIR}/config.tar.gz" ]; then
-    tar xzf "${BACKUP_DIR}/config.tar.gz" -C .
+    docker run --rm \
+        -v "$(realpath .):/target" \
+        -v "$(realpath "${BACKUP_DIR}/config.tar.gz"):/backup.tar.gz:ro" \
+        alpine sh -c "cd /target && tar xzf /backup.tar.gz --overwrite"
     echo "  Done."
 else
     echo "  No config backup found, skipping."

@@ -729,6 +729,15 @@ print(json.dumps(wf))
     # which sends the alert with an "Authorization: Bearer <api_key>" header
     # — the vendor `shuffle` integration does not, so direct calls to
     # /api/v1/workflows/<id>/execute would fail with HTTP 403.
+    #
+    # Patch BOTH the runtime config (so the integration starts working
+    # immediately) AND the host template file (config/wazuh_cluster/
+    # wazuh_manager.conf), which the manager image's cont-init mount_files
+    # copies into /var/ossec/etc/ossec.conf on container start. Without the
+    # host-file patch, restoring from backup or any container recreation
+    # would silently revert the integration to placeholders.
+    sed -i "s|SHUFFLE_WEBHOOK_URL_PLACEHOLDER|${SHUFFLE_EXEC_URL}|" config/wazuh_cluster/wazuh_manager.conf
+    sed -i "s|SHUFFLE_API_KEY_PLACEHOLDER|${SHUFFLE_DEFAULT_APIKEY}|" config/wazuh_cluster/wazuh_manager.conf
     docker compose exec -T wazuh.manager bash -c "
 sed -i 's|SHUFFLE_WEBHOOK_URL_PLACEHOLDER|${SHUFFLE_EXEC_URL}|' /var/ossec/etc/ossec.conf
 sed -i 's|SHUFFLE_API_KEY_PLACEHOLDER|${SHUFFLE_DEFAULT_APIKEY}|' /var/ossec/etc/ossec.conf

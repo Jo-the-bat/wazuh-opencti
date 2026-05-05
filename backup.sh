@@ -70,15 +70,31 @@ else
 fi
 
 # --- Back up Docker volumes ---
+# tar against a live Elasticsearch / OpenSearch data dir produces "No such
+# file or directory" warnings as Lucene segments get merged/deleted mid-read.
+# busybox tar exits 1 on those warnings (the archive is still valid). Exit 2
+# is a real error. Treat 0 and 1 as success, anything else as failure.
 echo "[3/4] Backing up Docker volumes..."
+WARN_LOG="${BACKUP_DIR}/tar-warnings.log"
+: >"$WARN_LOG"
 for vol in "${VOLUMES[@]}"; do
     FULL_VOL="${COMPOSE_PROJECT}_${vol}"
     if docker volume inspect "$FULL_VOL" &>/dev/null; then
         echo "  Backing up ${vol}..."
+        set +e
         docker run --rm \
             -v "${FULL_VOL}:/source:ro" \
             -v "$(realpath "$BACKUP_DIR"):/backup" \
-            alpine tar czf "/backup/vol_${vol}.tar.gz" -C /source . 2>/dev/null
+            alpine tar czf "/backup/vol_${vol}.tar.gz" -C /source . \
+            2>>"$WARN_LOG"
+        RC=$?
+        set -e
+        if [ "$RC" -gt 1 ]; then
+            echo "  FAIL: tar of ${vol} exited ${RC} (see ${WARN_LOG})" >&2
+            exit "$RC"
+        elif [ "$RC" -eq 1 ]; then
+            echo "  (warnings on ${vol}: files changed during read — archive is still usable)"
+        fi
     else
         echo "  Skipping ${vol} (not found)"
     fi
