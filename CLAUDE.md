@@ -31,7 +31,7 @@ docker-compose.yml                # All services (26 default + 8 optional) with 
 setup.sh                          # Full automated setup: passwords, certs, config, deploy
 generate-indexer-certs.yml        # Wazuh TLS cert generation
 scripts/
-  test-deployment.sh              # 27-point smoke test (E2E pipeline, active response, ISM, connectors, shards, Shuffle)
+  test-deployment.sh              # 31-point smoke test (E2E pipeline, active response, ISM, connectors, shards, Shuffle)
   ctem-report.sh                  # CTEM report: cross-ref Wazuh CVEs with CISA KEV
   configure-shuffle.sh            # Manual Shuffle webhook config (optional, setup.sh auto-configures)
   healthcheck-monitor.sh          # Container health monitoring
@@ -100,7 +100,7 @@ The `proxy.env` file is loaded by all internet-facing services (connectors, Open
 
 ```bash
 bash setup.sh                                    # Full setup (idempotent)
-bash scripts/test-deployment.sh                  # 27-point smoke test
+bash scripts/test-deployment.sh                  # 31-point smoke test
 bash scripts/ctem-report.sh                      # CTEM vulnerability report
 bash scripts/configure-shuffle.sh <webhook-url>  # Wire Wazuh to Shuffle
 docker compose up -d                             # Start all default services

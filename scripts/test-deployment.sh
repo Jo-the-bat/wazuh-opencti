@@ -387,6 +387,101 @@ else
     ((FAIL++))
 fi
 
+# --- 9d. Network ingestion paths (syslog 514/udp) ---
+echo "--- Network Ingestion ---"
+
+# SSH brute-force correlation: 10 'Failed password' events from same srcip
+# via syslog UDP 514 should trigger rule 5712 (sshd brute force, non existent
+# user — frequency=8, timeframe=120). Built-in Wazuh sshd decoder + ruleset.
+SSH_TEST_IP="198.51.100.42"
+SSH_BEFORE=$(docker compose exec -T wazuh.manager bash -c \
+    "grep -c '\"id\":\"5712\".*\"srcip\":\"$SSH_TEST_IP\"' /var/ossec/logs/alerts/alerts.json 2>/dev/null || true" \
+    | tr -d '\r' | head -1)
+SSH_BEFORE=${SSH_BEFORE:-0}
+for i in $(seq 1 10); do
+    printf '<13>May  5 14:00:%02d testhost sshd[1234]: Failed password for invalid user attacker%d from %s port %d ssh2\n' \
+        "$i" "$i" "$SSH_TEST_IP" "$((50000+i))" \
+        | nc -u -w1 localhost 514
+done
+SSH_PASS=false
+for _ in $(seq 1 6); do
+    sleep 5
+    SSH_AFTER=$(docker compose exec -T wazuh.manager bash -c \
+        "grep -c '\"id\":\"5712\".*\"srcip\":\"$SSH_TEST_IP\"' /var/ossec/logs/alerts/alerts.json 2>/dev/null || true" \
+        | tr -d '\r' | head -1)
+    SSH_AFTER=${SSH_AFTER:-0}
+    if [ "$SSH_AFTER" -gt "$SSH_BEFORE" ]; then
+        SSH_PASS=true; break
+    fi
+done
+if [ "$SSH_PASS" = true ]; then
+    echo "  PASS  SSH brute-force: 514/udp → sshd decoder → rule 5712 (correlation, $SSH_TEST_IP)"
+    ((PASS++))
+else
+    echo "  FAIL  SSH brute-force: rule 5712 not triggered after 10 syslog events on 514/udp"
+    ((FAIL++))
+fi
+
+# Stormshield SNS firewall: a single block event in the documented log format
+# should be decoded (custom stormshield_decoders.xml) and matched by a 103xxx
+# rule (custom stormshield_rules.xml).
+STORM_TEST_IP="203.0.113.7"
+STORM_BEFORE=$(docker compose exec -T wazuh.manager bash -c \
+    "grep -cE '\"id\":\"103[0-9]+\".*\"src\":\"$STORM_TEST_IP\"' /var/ossec/logs/alerts/alerts.json 2>/dev/null || true" \
+    | tr -d '\r' | head -1)
+STORM_BEFORE=${STORM_BEFORE:-0}
+printf '<134>May  5 14:01:00 sns id=firewall time="2026-05-05 14:01:00" fw="sns.test" tz=+0100 startime="2026-05-05 14:01:00" pri=4 confid=01 slotlevel=4 ruleid=2 srcif="in" srcifname="in" ipproto=tcp dstif="out" dstifname="out" proto=ssh src=%s srcname="attacker" srcport=12345 srcportname="ephemeral_fw_tcp" dst=10.0.0.2 dstname="target" dstport=22 dstportname="ssh" action=block\n' \
+    "$STORM_TEST_IP" \
+    | nc -u -w1 localhost 514
+STORM_PASS=false
+for _ in $(seq 1 6); do
+    sleep 5
+    STORM_AFTER=$(docker compose exec -T wazuh.manager bash -c \
+        "grep -cE '\"id\":\"103[0-9]+\".*\"src\":\"$STORM_TEST_IP\"' /var/ossec/logs/alerts/alerts.json 2>/dev/null || true" \
+        | tr -d '\r' | head -1)
+    STORM_AFTER=${STORM_AFTER:-0}
+    if [ "$STORM_AFTER" -gt "$STORM_BEFORE" ]; then
+        STORM_PASS=true; break
+    fi
+done
+if [ "$STORM_PASS" = true ]; then
+    echo "  PASS  Stormshield: 514/udp → custom decoder → rule 103xxx ($STORM_TEST_IP)"
+    ((PASS++))
+else
+    echo "  FAIL  Stormshield: no 103xxx rule triggered after firewall syslog event"
+    ((FAIL++))
+fi
+
+# --- 9e. Listening ports on the host ---
+echo "--- Listening Ports ---"
+PORTS_OK=true
+for p in 1514 1515 55000 9443 8443 3443; do
+    if ! ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE "(^|[^0-9])${p}\$"; then
+        echo "  FAIL  TCP port $p not listening on host"
+        ((FAIL++))
+        PORTS_OK=false
+    fi
+done
+if ! ss -lnu 2>/dev/null | awk '{print $4}' | grep -qE "(^|[^0-9])514\$"; then
+    echo "  FAIL  UDP port 514 (syslog) not listening on host"
+    ((FAIL++))
+    PORTS_OK=false
+fi
+if [ "$PORTS_OK" = true ]; then
+    echo "  PASS  All exposed ports listening (1514/1515/55000/9443/8443/3443 tcp, 514 udp)"
+    ((PASS++))
+fi
+
+# --- 9f. .env file permissions ---
+ENV_PERMS=$(stat -c %a .env 2>/dev/null || echo "missing")
+if [ "$ENV_PERMS" = "600" ]; then
+    echo "  PASS  .env permissions are 600 (not world/group readable)"
+    ((PASS++))
+else
+    echo "  FAIL  .env permissions are $ENV_PERMS (expected 600)"
+    ((FAIL++))
+fi
+
 # --- 9c. Operational tooling ---
 echo "--- Operational Tooling ---"
 
