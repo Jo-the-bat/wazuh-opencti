@@ -245,16 +245,19 @@ sock.close()
             echo "  PASS  Full pipeline: event → decoder → integratord → OpenCTI → alert (rule 100212)"
             ((PASS++))
 
-            # Check that the OpenCTI alert (level 12) also triggered Shuffle
-            # Wait a few extra seconds for Shuffle to process
+            # Check that the OpenCTI alert (level 12) also triggered Shuffle.
+            # We require a *successful* forward (HTTP 2xx) — counting log lines
+            # alone gives false positives when shuffle.py POSTs without auth and
+            # gets HTTP 403 from /api/v1/workflows/<id>/execute.
             sleep 5
-            SHUFFLE_AFTER=$(docker compose exec -T wazuh.manager \
-                grep -c shuffle /var/ossec/logs/integrations.log 2>/dev/null || echo 0)
-            if [ "$SHUFFLE_AFTER" -gt "$SHUFFLE_BEFORE" ]; then
-                echo "  PASS  OpenCTI alert → Shuffle: integratord forwarded alert to Shuffle"
+            if docker compose exec -T wazuh.manager bash -c "
+                tail -20 /var/ossec/logs/integrations.log \
+                    | grep -E 'custom-shuffle.*-> 2[0-9]{2}|shuffle.*Response received' >/dev/null
+            " 2>/dev/null; then
+                echo "  PASS  OpenCTI alert → Shuffle: integratord forwarded alert (HTTP 2xx)"
                 ((PASS++))
             else
-                echo "  FAIL  OpenCTI alert → Shuffle: alert not forwarded (check Shuffle integration in ossec.conf)"
+                echo "  FAIL  OpenCTI alert → Shuffle: no successful forward (check integratord auth header)"
                 ((FAIL++))
             fi
         else
@@ -272,38 +275,52 @@ fi
 
 # --- 10. Shuffle SOAR pipeline test ---
 echo "--- Shuffle Pipeline Test ---"
-# Find the Shuffle workflow configured in ossec.conf
-SHUFFLE_EXEC_URL=$(docker compose exec -T wazuh.manager \
-    grep -A5 '<name>shuffle</name>' /var/ossec/etc/ossec.conf 2>/dev/null \
-    | grep hook_url | sed 's|.*<hook_url>\(.*\)</hook_url>.*|\1|')
+# Find the Shuffle integration block in ossec.conf — auto-config writes
+# <name>custom-shuffle</name>; manual webhook config may use <name>shuffle</name>.
+SHUFFLE_INT_NAME=$(docker compose exec -T wazuh.manager bash -c "
+    grep -oE '<name>(custom-shuffle|shuffle)</name>' /var/ossec/etc/ossec.conf \
+        | head -1 | sed 's|</\\?name>||g'" 2>/dev/null | tr -d '\r')
+SHUFFLE_EXEC_URL=$(docker compose exec -T wazuh.manager bash -c "
+    awk '/<name>(custom-shuffle|shuffle)<\\/name>/,/<\\/integration>/' \
+        /var/ossec/etc/ossec.conf" 2>/dev/null \
+    | grep hook_url | head -1 | sed 's|.*<hook_url>\(.*\)</hook_url>.*|\1|')
+SHUFFLE_API_KEY=$(docker compose exec -T wazuh.manager bash -c "
+    awk '/<name>(custom-shuffle|shuffle)<\\/name>/,/<\\/integration>/' \
+        /var/ossec/etc/ossec.conf" 2>/dev/null \
+    | grep api_key | head -1 | sed 's|.*<api_key>\(.*\)</api_key>.*|\1|')
 
-if [ -n "$SHUFFLE_EXEC_URL" ] && echo "$SHUFFLE_EXEC_URL" | grep -q "workflows"; then
-    SHUFFLE_WF_ID=$(echo "$SHUFFLE_EXEC_URL" | grep -oP 'workflows/\K[^/]+')
-
-    # Check integratord has Shuffle enabled
-    if docker compose exec -T wazuh.manager grep -q "Enabling integration for: 'shuffle'" \
+if [ -n "$SHUFFLE_EXEC_URL" ] && echo "$SHUFFLE_EXEC_URL" | grep -qE "workflows|hooks"; then
+    # Check integratord enabled the integration
+    if docker compose exec -T wazuh.manager grep -qE "Enabling integration for: '(custom-)?shuffle'" \
         /var/ossec/logs/ossec.log 2>/dev/null; then
-        echo "  PASS  Integratord has Shuffle enabled"
+        echo "  PASS  Integratord has Shuffle enabled (${SHUFFLE_INT_NAME})"
         ((PASS++))
     else
         echo "  FAIL  Integratord did not enable Shuffle integration"
         ((FAIL++))
     fi
 
-    # Test direct workflow execution from Wazuh manager
-    SHUFFLE_RESPONSE=$(docker compose exec -T wazuh.manager curl -s -w "\n%{http_code}" \
-        -X POST "$SHUFFLE_EXEC_URL" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer ${SHUFFLE_DEFAULT_APIKEY}" \
-        -d '{"execution_argument":"{\"rule\":{\"level\":3,\"id\":\"000\",\"description\":\"Shuffle pipeline test\"}}","start":""}' 2>/dev/null)
-    SHUFFLE_HTTP=$(echo "$SHUFFLE_RESPONSE" | tail -1)
-    SHUFFLE_SUCCESS=$(echo "$SHUFFLE_RESPONSE" | head -1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('success',False))" 2>/dev/null || echo "False")
-
-    if [ "$SHUFFLE_HTTP" = "200" ] && [ "$SHUFFLE_SUCCESS" = "True" ]; then
-        echo "  PASS  Wazuh → Shuffle: workflow execution successful"
-        ((PASS++))
+    # Exercise the real integration script: write a sample alert, invoke
+    # /var/ossec/integrations/${SHUFFLE_INT_NAME} with the same args integratord
+    # would pass, and verify the script exits 0 (HTTP 200 from Shuffle).
+    if docker compose exec -T wazuh.manager bash -c "
+        cat > /tmp/shuffle_smoke.alert <<'AEOF'
+{\"timestamp\":\"2026-01-01T00:00:00+0000\",\"rule\":{\"id\":\"000\",\"level\":3,\"description\":\"Shuffle smoke test\"},\"agent\":{\"id\":\"000\",\"name\":\"manager\"},\"id\":\"smoke-test\"}
+AEOF
+        /var/ossec/integrations/${SHUFFLE_INT_NAME} /tmp/shuffle_smoke.alert '${SHUFFLE_API_KEY}' '${SHUFFLE_EXEC_URL}'
+    " 2>/dev/null; then
+        # Verify the last log line shows a 2xx status from Shuffle
+        if docker compose exec -T wazuh.manager bash -c "
+            tail -5 /var/ossec/logs/integrations.log | grep -E 'custom-shuffle.*-> 2[0-9]{2}|shuffle.*Response received' >/dev/null
+        " 2>/dev/null; then
+            echo "  PASS  Wazuh → Shuffle: integration script accepted by Shuffle (HTTP 2xx)"
+            ((PASS++))
+        else
+            echo "  FAIL  Wazuh → Shuffle: integration script ran but Shuffle did not return 2xx"
+            ((FAIL++))
+        fi
     else
-        echo "  FAIL  Wazuh → Shuffle: workflow execution failed (HTTP $SHUFFLE_HTTP)"
+        echo "  FAIL  Wazuh → Shuffle: integration script returned non-zero (likely HTTP 4xx/5xx — check auth/url)"
         ((FAIL++))
     fi
 else

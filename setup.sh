@@ -388,10 +388,11 @@ WMEOF
 # Append the integration block with the real token (variable substitution)
 cat >> config/wazuh_cluster/wazuh_manager.conf << WMEOF2
   <integration>
-    <name>shuffle</name>
+    <name>custom-shuffle</name>
     <hook_url>SHUFFLE_WEBHOOK_URL_PLACEHOLDER</hook_url>
     <level>3</level>
     <alert_format>json</alert_format>
+    <api_key>SHUFFLE_API_KEY_PLACEHOLDER</api_key>
   </integration>
 
   <integration>
@@ -692,21 +693,15 @@ print(json.dumps(wf))
 ")" 2>/dev/null | python3 -c "import sys,json; r=json.load(sys.stdin); print('  Workflow updated with triage actions.' if r.get('id') else '  WARNING: Could not update workflow.')" 2>/dev/null
 
     echo "  Configuring Wazuh → Shuffle integration..."
-    # Update the placeholder in ossec.conf with the real execution URL
-    docker compose exec -T wazuh.manager bash -c \
-        "sed -i 's|SHUFFLE_WEBHOOK_URL_PLACEHOLDER|${SHUFFLE_EXEC_URL}|' /var/ossec/etc/ossec.conf"
-    # Shuffle API key is used as the integration api_key for auth
-    docker compose exec -T wazuh.manager python3 -c "
-import re
-with open('/var/ossec/etc/ossec.conf', 'r') as f:
-    conf = f.read()
-conf = re.sub(
-    r'(<name>shuffle</name>.*?<alert_format>json</alert_format>)',
-    r'\1\n    <api_key>${SHUFFLE_DEFAULT_APIKEY}</api_key>',
-    conf, count=1, flags=re.DOTALL)
-with open('/var/ossec/etc/ossec.conf', 'w') as f:
-    f.write(conf)
-" 2>/dev/null
+    # Substitute real values into both placeholders. The integration uses the
+    # custom-shuffle script (config/wazuh_integrations/custom-shuffle{,.py}),
+    # which sends the alert with an "Authorization: Bearer <api_key>" header
+    # — the vendor `shuffle` integration does not, so direct calls to
+    # /api/v1/workflows/<id>/execute would fail with HTTP 403.
+    docker compose exec -T wazuh.manager bash -c "
+sed -i 's|SHUFFLE_WEBHOOK_URL_PLACEHOLDER|${SHUFFLE_EXEC_URL}|' /var/ossec/etc/ossec.conf
+sed -i 's|SHUFFLE_API_KEY_PLACEHOLDER|${SHUFFLE_DEFAULT_APIKEY}|' /var/ossec/etc/ossec.conf
+"
     echo "  Wazuh → Shuffle integration configured."
 else
     echo "  WARNING: Could not create Shuffle workflow. Configure manually." >&2

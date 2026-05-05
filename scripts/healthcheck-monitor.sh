@@ -47,7 +47,9 @@ while IFS= read -r line; do
     else
         HEALTHY+=("$NAME")
     fi
-done < <(docker compose ps --format json 2>/dev/null)
+done < <(docker compose ps -a --format json 2>/dev/null)
+# `-a` so we also see exited/crashed containers — the default `ps` would silently
+# drop them and the monitor would report "all healthy" while a service is down.
 
 TOTAL=$(( ${#HEALTHY[@]} + ${#UNHEALTHY[@]} + ${#STOPPED[@]} ))
 

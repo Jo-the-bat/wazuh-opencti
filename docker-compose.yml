@@ -87,6 +87,8 @@ services:
       - ./config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf:ro
       - ./config/wazuh_integrations/custom-opencti:/var/ossec/integrations/custom-opencti:ro
       - ./config/wazuh_integrations/custom-opencti.py:/var/ossec/integrations/custom-opencti.py:ro
+      - ./config/wazuh_integrations/custom-shuffle:/var/ossec/integrations/custom-shuffle:ro
+      - ./config/wazuh_integrations/custom-shuffle.py:/var/ossec/integrations/custom-shuffle.py:ro
       - ./config/wazuh_rules/opencti_rules.xml:/var/ossec/etc/rules/opencti_rules.xml:ro
       - ./config/wazuh_rules/stormshield_rules.xml:/var/ossec/etc/rules/stormshield_rules.xml:ro
       - ./config/wazuh_rules/correlation_rules.xml:/var/ossec/etc/rules/correlation_rules.xml:ro
