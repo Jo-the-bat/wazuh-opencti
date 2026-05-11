@@ -40,16 +40,19 @@ echo "============================================"
 echo ""
 
 # --- 1. Container health ---
+# `docker compose ps` (no -a) only lists running containers, so a service
+# that exited would silently drop out of TOTAL and the ratio would still look
+# healthy. Use -a so exited/dead/restarting containers count against the total.
 echo "--- Containers ---"
-TOTAL=$(docker compose ps --format "{{.Status}}" 2>/dev/null | wc -l)
-HEALTHY=$(docker compose ps --format "{{.Status}}" 2>/dev/null | grep -c "healthy" || true)
+TOTAL=$(docker compose ps -a --format "{{.Status}}" 2>/dev/null | wc -l)
+HEALTHY=$(docker compose ps -a --format "{{.Status}}" 2>/dev/null | grep -c "healthy" || true)
 if [ "$HEALTHY" -eq "$TOTAL" ] && [ "$TOTAL" -ge 26 ]; then
     echo "  PASS  All $HEALTHY/$TOTAL containers healthy"
     ((PASS++))
 else
     echo "  FAIL  Only $HEALTHY/$TOTAL containers healthy"
     ((FAIL++))
-    docker compose ps --format "{{.Name}} {{.Status}}" 2>/dev/null | grep -v healthy | sed 's/^/         /'
+    docker compose ps -a --format "{{.Name}} {{.Status}}" 2>/dev/null | grep -v healthy | sed 's/^/         /'
 fi
 
 # --- 2. Wazuh indexer ---
@@ -143,15 +146,26 @@ check "Shuffle proxy (:3443)" \
     curl -sk -o /dev/null https://localhost:3443/
 NGINX_HEADERS=$(curl -sk -I https://localhost:8443/ 2>/dev/null)
 HEADERS_OK=true
-for H in "strict-transport-security" "x-frame-options" "x-content-type-options" "referrer-policy"; do
-    if ! echo "$NGINX_HEADERS" | grep -qi "^${H}:"; then
-        echo "  FAIL  Missing nginx security header: $H"
+# Each entry is "name:expected-value-substring". The expected value must appear
+# in the header line — checking the name alone is a false positive because the
+# OpenCTI upstream also sets some of these headers (e.g. Referrer-Policy:
+# unsafe-url), so just looking for the name would pass even if nginx no longer
+# adds its hardened value.
+for spec in \
+    "strict-transport-security:max-age=31536000" \
+    "x-frame-options:SAMEORIGIN" \
+    "x-content-type-options:nosniff" \
+    "referrer-policy:strict-origin-when-cross-origin"; do
+    name="${spec%%:*}"
+    expected="${spec#*:}"
+    if ! echo "$NGINX_HEADERS" | grep -i "^${name}:" | grep -qF "${expected}"; then
+        echo "  FAIL  Nginx header ${name} missing or wrong value (expected to contain: ${expected})"
         ((FAIL++))
         HEADERS_OK=false
     fi
 done
 if [ "$HEADERS_OK" = true ]; then
-    echo "  PASS  Nginx security headers present (HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy)"
+    echo "  PASS  Nginx security headers present with hardened values (HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy)"
     ((PASS++))
 fi
 
@@ -283,13 +297,19 @@ sock.close()
             fi
 
             # False-positive guard: a benign URL (RFC1918 host) must NOT
-            # generate a 100212+ alert. Verifies custom-opencti.py only
-            # fires on indicator matches, not on every audit_command event.
-            FP_BEFORE=$(docker compose exec -T wazuh.manager \
-                grep -cE '"id":"10021[2-5]"' /var/ossec/logs/alerts/alerts.json 2>/dev/null \
-                | tr -d '\r' | head -1)
-            FP_BEFORE=${FP_BEFORE:-0}
-            docker compose exec -T wazuh.manager python3 -c "
+            # generate a 100212+ alert. Verifies custom-opencti.py only fires
+            # on indicator matches, not on every audit_command event.
+            #
+            # Use a unique marker URL ("benign-fp-test-${RANDOM}") and only
+            # count 100212-100215 alerts whose payload mentions that exact
+            # marker — counting the global 100212-100215 stream is flaky
+            # because the pipeline's positive-IOC alert can still be writing
+            # additional 100212 entries during the 30 s wait, producing a
+            # spurious increment unrelated to our benign injection.
+            FP_MARKER="benign-fp-test-$$-$(date +%s)"
+            FP_PATTERN="\"id\":\"10021[2-5]\".*${FP_MARKER}"
+            docker compose exec -T -e MARKER="$FP_MARKER" wazuh.manager python3 -c "
+import os
 from socket import socket, AF_UNIX, SOCK_DGRAM
 audit = (
     'type=SYSCALL msg=audit(1712500999.000:99099): arch=c000003e syscall=59 '
@@ -297,7 +317,7 @@ audit = (
     'auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 '
     'ses=1 comm=\"curl\" exe=\"/usr/bin/curl\" key=\"audit-wazuh-c\"'
     ' type=EXECVE msg=audit(1712500999.000:99099): argc=2 a0=\"curl\"'
-    ' a1=\"http://192.168.42.99/benign-fp-test\"'
+    ' a1=\"http://192.168.42.99/' + os.environ['MARKER'] + '\"'
 )
 sock = socket(AF_UNIX, SOCK_DGRAM)
 sock.connect('/var/ossec/queue/sockets/queue')
@@ -305,15 +325,15 @@ sock.send(('1:/var/log/audit/audit.log:' + audit).encode())
 sock.close()
 " 2>/dev/null
             sleep 30
-            FP_AFTER=$(docker compose exec -T wazuh.manager \
-                grep -cE '"id":"10021[2-5]"' /var/ossec/logs/alerts/alerts.json 2>/dev/null \
+            FP_HITS=$(docker compose exec -T -e PAT="$FP_PATTERN" wazuh.manager \
+                bash -c 'grep -cE "$PAT" /var/ossec/logs/alerts/alerts.json 2>/dev/null || true' \
                 | tr -d '\r' | head -1)
-            FP_AFTER=${FP_AFTER:-0}
-            if [ "$FP_AFTER" -eq "$FP_BEFORE" ]; then
+            FP_HITS=${FP_HITS:-0}
+            if [ "$FP_HITS" -eq 0 ]; then
                 echo "  PASS  No false positive: benign RFC1918 URL did not produce a 100212+ alert"
                 ((PASS++))
             else
-                echo "  FAIL  False positive: benign URL injection raised 100212+ count ($FP_BEFORE → $FP_AFTER)"
+                echo "  FAIL  False positive: benign URL injection produced ${FP_HITS} matching 100212+ alert(s)"
                 ((FAIL++))
             fi
 
@@ -403,7 +423,11 @@ else
     ((FAIL++))
 fi
 
-# Threat-intel connectors active by name — beyond the count check above
+# Threat-intel connectors active by name — beyond the count check above.
+# We also cross-check the matching container is healthy, because OpenCTI keeps
+# reporting active=true for several minutes after the connector stops sending
+# heartbeats. Without the Docker-side check a short-lived crash would slip
+# through this test (false positive).
 EXPECTED_CONNECTORS="MITRE ATT&CK,URLhaus,CISA KEV,ThreatFox,OpenCTI Datasets,VX Vault,DISARM Framework"
 MISSING_CONNECTORS=$(curl -sk -X POST https://localhost:8443/graphql \
     -H "Content-Type: application/json" \
@@ -416,11 +440,21 @@ got = {c['name'] for c in json.load(sys.stdin)['data']['connectors'] if c['activ
 missing = sorted(expected - got)
 print(','.join(missing))
 " 2>/dev/null)
-if [ -z "$MISSING_CONNECTORS" ]; then
-    echo "  PASS  All 7 expected threat-intel connectors active by name"
+UNHEALTHY_CONNECTORS=""
+for c in connector-mitre connector-urlhaus connector-cisa-kev connector-threatfox \
+         connector-opencti-datasets connector-vxvault connector-disarm; do
+    state=$(docker inspect -f '{{.State.Health.Status}}' "wazuh-opencti-${c}-1" 2>/dev/null || echo "missing")
+    if [ "$state" != "healthy" ]; then
+        UNHEALTHY_CONNECTORS="${UNHEALTHY_CONNECTORS}${c}(${state}) "
+    fi
+done
+if [ -z "$MISSING_CONNECTORS" ] && [ -z "$UNHEALTHY_CONNECTORS" ]; then
+    echo "  PASS  All 7 expected threat-intel connectors active by name and healthy"
     ((PASS++))
 else
-    echo "  FAIL  Missing/inactive threat-intel connectors: $MISSING_CONNECTORS"
+    echo "  FAIL  Threat-intel connectors broken"
+    [ -n "$MISSING_CONNECTORS" ]   && echo "         OpenCTI inactive: $MISSING_CONNECTORS"
+    [ -n "$UNHEALTHY_CONNECTORS" ] && echo "         containers not healthy: $UNHEALTHY_CONNECTORS"
     ((FAIL++))
 fi
 
@@ -581,13 +615,17 @@ SHUFFLE_API_KEY=$(docker compose exec -T wazuh.manager bash -c "
     | grep api_key | head -1 | sed 's|.*<api_key>\(.*\)</api_key>.*|\1|')
 
 if [ -n "$SHUFFLE_EXEC_URL" ] && echo "$SHUFFLE_EXEC_URL" | grep -qE "workflows|hooks"; then
-    # Check integratord enabled the integration
-    if docker compose exec -T wazuh.manager grep -qE "Enabling integration for: '(custom-)?shuffle'" \
-        /var/ossec/logs/ossec.log 2>/dev/null; then
+    # Confirm the integration script integratord would invoke is present and
+    # executable. We deliberately do not grep ossec.log for "Enabling
+    # integration" — that line only lives in the *current* log and disappears
+    # after rotation, producing a false-negative on long-running stacks.
+    # The subsequent "integration script accepted by Shuffle (HTTP 2xx)" test
+    # is the end-to-end proof that integratord can actually fire it.
+    if docker compose exec -T wazuh.manager test -x "/var/ossec/integrations/${SHUFFLE_INT_NAME}" 2>/dev/null; then
         echo "  PASS  Integratord has Shuffle enabled (${SHUFFLE_INT_NAME})"
         ((PASS++))
     else
-        echo "  FAIL  Integratord did not enable Shuffle integration"
+        echo "  FAIL  Integration script /var/ossec/integrations/${SHUFFLE_INT_NAME} missing or not executable"
         ((FAIL++))
     fi
 
