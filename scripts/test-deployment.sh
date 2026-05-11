@@ -151,6 +151,42 @@ else
     ((FAIL++))
 fi
 
+# Per-source counts — detects a single connector being dead even when total
+# indicators looks healthy (e.g. URLhaus fine, CISA KEV stuck). CISA KEV
+# imports as `vulnerabilities`, MITRE as `attackPatterns` — both distinct
+# STIX object types from `indicators`.
+KEV_COUNT=$(curl -sk -X POST https://localhost:8443/graphql \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
+    -d '{"query":"{ vulnerabilities(first:1) { pageInfo { globalCount } } }"}' 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["vulnerabilities"]["pageInfo"]["globalCount"])' 2>/dev/null || echo 0)
+MITRE_COUNT=$(curl -sk -X POST https://localhost:8443/graphql \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
+    -d '{"query":"{ attackPatterns(first:1) { pageInfo { globalCount } } }"}' 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["attackPatterns"]["pageInfo"]["globalCount"])' 2>/dev/null || echo 0)
+KEV_COUNT=${KEV_COUNT:-0}
+MITRE_COUNT=${MITRE_COUNT:-0}
+# Thresholds well below documented "1500+ CVEs" and "~600 techniques" but
+# high enough that a stuck connector (0 ingestion) is clearly detected.
+# Both connectors typically finish their first sync within ~10 min of
+# stack boot.
+PER_SOURCE_OK=true
+if [ "$KEV_COUNT" -lt 50 ]; then
+    echo "  FAIL  CISA KEV: only $KEV_COUNT vulnerabilities (≥50 expected — connector likely stuck)"
+    ((FAIL++))
+    PER_SOURCE_OK=false
+fi
+if [ "$MITRE_COUNT" -lt 50 ]; then
+    echo "  FAIL  MITRE ATT&CK: only $MITRE_COUNT attack patterns (≥50 expected — connector likely stuck)"
+    ((FAIL++))
+    PER_SOURCE_OK=false
+fi
+if [ "$PER_SOURCE_OK" = true ]; then
+    echo "  PASS  Per-source TI depth: CISA KEV $KEV_COUNT vulns, MITRE $MITRE_COUNT patterns"
+    ((PASS++))
+fi
+
 # --- 6. Nginx proxy ---
 echo "--- Nginx HTTPS ---"
 check "OpenCTI proxy (:8443)" \
@@ -197,6 +233,19 @@ if curl -sk -u "admin:${WAZUH_INDEXER_PASSWORD}" \
     ((PASS++))
 else
     echo "  FAIL  SOC Security Overview dashboard not found in saved objects"
+    ((FAIL++))
+fi
+
+# wazuh-archives-* index pattern — setup.sh creates it so archive docs show
+# up in Discover. Pure config artifact (no events flow through it), so the
+# only signal that the create call lived is to query Saved Objects.
+if curl -sk -u "admin:${WAZUH_INDEXER_PASSWORD}" \
+    "https://localhost:9443/api/saved_objects/_find?type=index-pattern&per_page=100" 2>/dev/null \
+    | grep -qE '"title":"wazuh-archives-\*"|"id":"wazuh-archives'; then
+    echo "  PASS  Kibana index pattern wazuh-archives-* registered"
+    ((PASS++))
+else
+    echo "  FAIL  Kibana index pattern wazuh-archives-* not found"
     ((FAIL++))
 fi
 
@@ -831,6 +880,47 @@ if [ "$ENV_PERMS" = "600" ]; then
     ((PASS++))
 else
     echo "  FAIL  .env permissions are $ENV_PERMS (expected 600)"
+    ((FAIL++))
+fi
+
+# Random passwords must match the length setup.sh's generate_password()
+# advertises (≥16 chars; Grafana is deliberately exactly 16, others 19-20).
+# Catches a setup.sh regression that downgrades to short or hard-coded
+# defaults. Skip commented lines (template entries like #SMTP_AUTH_PASS=)
+# and skip the WAZUH_CLUSTER_KEY/uuid/version fields which are not
+# passwords.
+SHORT_PWS=$(awk -F= '
+    /^#/ {next}
+    /_PASSWORD=|_PASS=/ {
+        v=$2; gsub(/^"|"$/,"",v); gsub(/^'\''|'\''$/,"",v)
+        if (length(v) < 16) print $1"("length(v)")"
+    }' .env)
+if [ -z "$SHORT_PWS" ]; then
+    echo "  PASS  All generated passwords in .env are ≥16 characters"
+    ((PASS++))
+else
+    echo "  FAIL  Generated passwords too short: $SHORT_PWS"
+    ((FAIL++))
+fi
+
+# Internal Wazuh indexer users must have bcrypt hashes, not plaintext. The
+# setup.sh script generates them via the wazuh-indexer container — catches a
+# regression that drops in plain passwords or silently fails to hash. The
+# file only contains hashes for the accounts setup.sh actively configures
+# (admin + kibanaserver = 2), so the threshold is ≥2.
+INTERNAL_USERS=config/wazuh_indexer/internal_users.yml
+if [ -f "$INTERNAL_USERS" ]; then
+    BCRYPT_COUNT=$(grep -cE 'hash:\s*"\$2[aby]\$[0-9]+\$' "$INTERNAL_USERS" || true)
+    PLAINTEXT_COUNT=$(grep -cE '^\s*password:\s*[^$"#]' "$INTERNAL_USERS" || true)
+    if [ "$BCRYPT_COUNT" -ge 2 ] && [ "$PLAINTEXT_COUNT" -eq 0 ]; then
+        echo "  PASS  Internal indexer users: $BCRYPT_COUNT bcrypt hashes, no plaintext password"
+        ((PASS++))
+    else
+        echo "  FAIL  internal_users.yml: $BCRYPT_COUNT bcrypt, $PLAINTEXT_COUNT plaintext (expected ≥2 bcrypt, 0 plaintext)"
+        ((FAIL++))
+    fi
+else
+    echo "  FAIL  config/wazuh_indexer/internal_users.yml missing"
     ((FAIL++))
 fi
 
