@@ -574,6 +574,99 @@ else
     ((FAIL++))
 fi
 
+# Stormshield variants: 103001 (pass action), 103004 (auth fail), 103009
+# (bruteforce correlation) + firewall-drop AR, 103010 (public IP). Each is
+# wired up by setup.sh / shipped decoders but never exercised individually.
+
+# Pass action — chains 103001 → 103011 (private dst) or 103010 (public dst).
+# We accept any of those as long as the alert records action=pass for the
+# test srcip, which proves the decoder + chain handled "pass" events.
+STORM_PASS_IP="203.0.113.31"
+printf '<134>May  5 14:01:00 sns id=firewall time="2026-05-05 14:01:00" fw="sns.test" tz=+0100 startime="2026-05-05 14:01:00" pri=4 confid=01 slotlevel=4 ruleid=2 srcif="in" srcifname="in" ipproto=tcp dstif="out" dstifname="out" proto=ssh src=%s srcname="user" srcport=12345 srcportname="ephemeral_fw_tcp" dst=10.0.0.50 origdst=10.0.0.50 dstname="target" dstport=22 dstportname="ssh" action=pass\n' \
+    "$STORM_PASS_IP" \
+    | nc -u -w1 localhost 514
+sleep 10
+if docker compose exec -T -e IP="$STORM_PASS_IP" wazuh.manager bash -c \
+    'awk -v ip="$IP" "/\"id\":\"1030(01|10|11)\"/ && index(\$0, ip) && index(\$0, \"\\\"action\\\":\\\"pass\\\"\")" /var/ossec/logs/alerts/alerts.json | head -1 | grep -q .' 2>/dev/null; then
+    echo "  PASS  Stormshield variant: pass-action rule (103001 chain) fired for $STORM_PASS_IP"
+    ((PASS++))
+else
+    echo "  FAIL  Stormshield variant: no pass-action rule fired for $STORM_PASS_IP"
+    ((FAIL++))
+fi
+
+# 103004 (auth failed) + 103009 (bruteforce correlation, frequency=3) +
+# firewall-drop active response wired to rule 103009 in ossec.conf.
+STORM_AUTH_IP="203.0.113.32"
+STORM_AR_BEFORE=$(docker compose exec -T -e IP="$STORM_AUTH_IP" wazuh.manager bash -c \
+    'grep -cE "active-response/bin/firewall-drop.*$IP" /var/ossec/logs/active-responses.log 2>/dev/null || true' \
+    | tr -d '\r' | head -1)
+STORM_AR_BEFORE=${STORM_AR_BEFORE:-0}
+for i in $(seq 1 5); do
+    printf '<134>May  5 14:02:%02d sns id=firewall time="2026-05-05 14:02:%02d" fw="sns.test" tz=+0100 startime="2026-05-05 14:02:%02d" pri=3 confid=01 slotlevel=4 ruleid=2 user="attacker" src=%s srcname="bruteforcer" error=4 msg="Authentication request invalid"\n' \
+        "$i" "$i" "$i" "$STORM_AUTH_IP" \
+        | nc -u -w1 localhost 514
+done
+sleep 15
+if docker compose exec -T -e IP="$STORM_AUTH_IP" wazuh.manager bash -c \
+    'grep -E "\"id\":\"103004\".*\"src\":\"$IP\"" /var/ossec/logs/alerts/alerts.json >/dev/null 2>&1' 2>/dev/null; then
+    echo "  PASS  Stormshield variant: rule 103004 (auth failed) fired for $STORM_AUTH_IP"
+    ((PASS++))
+else
+    echo "  FAIL  Stormshield variant: rule 103004 (auth failed) did not fire"
+    ((FAIL++))
+fi
+STORM_BF_PASS=false
+for _ in $(seq 1 4); do
+    sleep 5
+    if docker compose exec -T -e IP="$STORM_AUTH_IP" wazuh.manager bash -c \
+        'grep -E "\"id\":\"103009\".*\"src\":\"$IP\"" /var/ossec/logs/alerts/alerts.json >/dev/null 2>&1' 2>/dev/null; then
+        STORM_BF_PASS=true; break
+    fi
+done
+if [ "$STORM_BF_PASS" = true ]; then
+    echo "  PASS  Stormshield variant: rule 103009 (bruteforce correlation) fired for $STORM_AUTH_IP"
+    ((PASS++))
+else
+    echo "  FAIL  Stormshield variant: rule 103009 did not fire after 5 auth failures"
+    ((FAIL++))
+fi
+# Active response firewall-drop on rule 103009 (configured in ossec.conf
+# alongside the host-deny block — README claim "firewall-drop on rule 103009").
+STORM_AR_PASS=false
+for _ in $(seq 1 4); do
+    sleep 5
+    STORM_AR_AFTER=$(docker compose exec -T -e IP="$STORM_AUTH_IP" wazuh.manager bash -c \
+        'grep -cE "active-response/bin/firewall-drop.*$IP" /var/ossec/logs/active-responses.log 2>/dev/null || true' \
+        | tr -d '\r' | head -1)
+    STORM_AR_AFTER=${STORM_AR_AFTER:-0}
+    if [ "$STORM_AR_AFTER" -gt "$STORM_AR_BEFORE" ]; then
+        STORM_AR_PASS=true; break
+    fi
+done
+if [ "$STORM_AR_PASS" = true ]; then
+    echo "  PASS  Active response: firewall-drop invoked by rule 103009 ($STORM_AUTH_IP)"
+    ((PASS++))
+else
+    echo "  FAIL  Active response: no firewall-drop entry for $STORM_AUTH_IP after rule 103009"
+    ((FAIL++))
+fi
+
+# 103010 — pass traffic to a public destination
+STORM_PUB_IP="203.0.113.33"
+printf '<134>May  5 14:03:00 sns id=firewall time="2026-05-05 14:03:00" fw="sns.test" tz=+0100 startime="2026-05-05 14:03:00" pri=4 confid=01 slotlevel=4 ruleid=2 srcif="in" srcifname="in" ipproto=tcp dstif="out" dstifname="out" proto=https src=%s srcname="user" srcport=12345 srcportname="ephemeral_fw_tcp" dst=8.8.8.8 origdst=8.8.8.8 dstname="dns.google" dstport=443 dstportname="https" action=pass\n' \
+    "$STORM_PUB_IP" \
+    | nc -u -w1 localhost 514
+sleep 10
+if docker compose exec -T -e IP="$STORM_PUB_IP" wazuh.manager bash -c \
+    'grep -E "\"id\":\"103010\".*\"src\":\"$IP\"" /var/ossec/logs/alerts/alerts.json >/dev/null 2>&1' 2>/dev/null; then
+    echo "  PASS  Stormshield variant: rule 103010 (public IP) fired for $STORM_PUB_IP → 8.8.8.8"
+    ((PASS++))
+else
+    echo "  FAIL  Stormshield variant: rule 103010 (public IP) did not fire"
+    ((FAIL++))
+fi
+
 # --- 9e. Listening ports on the host ---
 echo "--- Listening Ports ---"
 PORTS_OK=true
@@ -592,6 +685,60 @@ fi
 if [ "$PORTS_OK" = true ]; then
     echo "  PASS  All exposed ports listening (1514/1515/55000/9443/8443/3443 tcp, 514 udp)"
     ((PASS++))
+fi
+
+# --- 9e-bis. Runtime container hardening ---
+# Verify the hardening posture CLAUDE.md claims actually persists at runtime
+# (`docker compose` only validates the YAML at parse time — these checks read
+# the live container HostConfig).
+echo "--- Hardening Runtime ---"
+
+NGINX_RO=$(docker inspect wazuh-opencti-nginx-1 --format '{{.HostConfig.ReadonlyRootfs}}' 2>/dev/null)
+if [ "$NGINX_RO" = "true" ]; then
+    echo "  PASS  Nginx rootfs is read-only at runtime"
+    ((PASS++))
+else
+    echo "  FAIL  Nginx rootfs not read-only (got: $NGINX_RO)"
+    ((FAIL++))
+fi
+
+NGINX_CAPS=$(docker inspect wazuh-opencti-nginx-1 --format '{{json .HostConfig.CapDrop}}' 2>/dev/null)
+if echo "$NGINX_CAPS" | grep -q '"ALL"'; then
+    echo "  PASS  Nginx drops all Linux capabilities (cap_drop=[ALL])"
+    ((PASS++))
+else
+    echo "  FAIL  Nginx CapDrop missing 'ALL' (got: $NGINX_CAPS)"
+    ((FAIL++))
+fi
+
+# CLAUDE.md claims `no-new-privileges` is set on 30/32 containers (excludes
+# Shuffle backend + orborus which need Docker-socket access). Check at least
+# 25 containers have it.
+NNP_COUNT=$(docker compose ps -aq 2>/dev/null \
+    | xargs -r docker inspect --format '{{.Name}} {{.HostConfig.SecurityOpt}}' 2>/dev/null \
+    | grep -c 'no-new-privileges:true' || true)
+NNP_COUNT=${NNP_COUNT:-0}
+if [ "$NNP_COUNT" -ge 25 ]; then
+    echo "  PASS  no-new-privileges set on $NNP_COUNT containers (≥25 expected)"
+    ((PASS++))
+else
+    echo "  FAIL  no-new-privileges set on only $NNP_COUNT containers (≥25 expected)"
+    ((FAIL++))
+fi
+
+# Redis requires authentication: a connection without password must fail.
+# Override REDISCLI_AUTH so redis-cli does not silently auto-authenticate
+# with the password baked into the container env (which is set by the
+# REDIS_PASSWORD compose variable). The implicit success of authenticated
+# clients is verified separately by OpenCTI being healthy.
+REDIS_UNAUTH=$(docker compose exec -T -e REDISCLI_AUTH= redis redis-cli ping 2>&1 \
+    | grep -vE "level=warning|^time=")
+if echo "$REDIS_UNAUTH" | grep -qiE 'NOAUTH|Authentication required'; then
+    echo "  PASS  Redis rejects unauthenticated connections"
+    ((PASS++))
+else
+    echo "  FAIL  Redis answered without password (got: $REDIS_UNAUTH)"
+    ((FAIL++))
 fi
 
 # --- 9f. .env file permissions ---
