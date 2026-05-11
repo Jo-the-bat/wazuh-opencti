@@ -138,6 +138,18 @@ print(len(ext))
 check "Threat intel connectors active ($ACTIVE_CONNECTORS)" \
     test "$ACTIVE_CONNECTORS" -ge 5
 
+# Catches "connector active but ingesting nothing" (rate-limited API, broken
+# feed). A fully-broken ingestion would leave INDICATOR_COUNT at 0 — the
+# threshold of 100 is safely above the trivial "connector returned an
+# empty batch" case but below typical URLhaus first-run output (500).
+if [ "$INDICATOR_COUNT" -ge 100 ]; then
+    echo "  PASS  Threat intel ingestion depth: $INDICATOR_COUNT indicators (≥100)"
+    ((PASS++))
+else
+    echo "  FAIL  Threat intel ingestion depth too low: only $INDICATOR_COUNT indicators (≥100 expected)"
+    ((FAIL++))
+fi
+
 # --- 6. Nginx proxy ---
 echo "--- Nginx HTTPS ---"
 check "OpenCTI proxy (:8443)" \
@@ -364,6 +376,76 @@ sock.close()
 else
     warn "Skipping pipeline test (no indicators loaded yet)"
 fi
+
+# --- 9a-bis. custom-opencti.py — IP and domain IOC code paths ---
+# The Pipeline E2E section exercises the URL path. custom-opencti.py also has
+# distinct code paths for IPv4 (extracted from srcip/dstip/src fields of
+# firewall events) and domain (from sysmon DNS / curl-style events). On a
+# fresh stack OpenCTI only has URL indicators (URLhaus); we create temporary
+# IOCs via GraphQL, inject a matching event, verify rule 100212/100213 fires,
+# then clean up.
+echo "--- Integration IOC Types ---"
+
+create_test_indicator() {
+    # $1 = pattern, $2 = observable type, $3 = name
+    curl -sk -X POST https://localhost:8443/graphql \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
+        -d "{\"query\":\"mutation(\$i: IndicatorAddInput!){indicatorAdd(input:\$i){id}}\",\"variables\":{\"i\":{\"name\":\"$3\",\"pattern\":\"$1\",\"pattern_type\":\"stix\",\"x_opencti_main_observable_type\":\"$2\"}}}" \
+        2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("data",{}).get("indicatorAdd",{}).get("id",""))' 2>/dev/null
+}
+
+delete_test_indicator() {
+    [ -z "$1" ] && return 0
+    curl -sk -X POST https://localhost:8443/graphql \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
+        -d "{\"query\":\"mutation{indicatorDelete(id:\\\"$1\\\")}\"}" \
+        >/dev/null 2>&1
+}
+
+# IPv4 IOC path: create indicator, inject Stormshield event (group=stormshield
+# is in the custom-opencti integration trigger list), expect 100212/100213.
+IP_TEST_IP="1.2.3.99"
+IP_IND_ID=$(create_test_indicator \
+    "[ipv4-addr:value = '${IP_TEST_IP}']" "IPv4-Addr" "${IP_TEST_IP}")
+if [ -n "$IP_IND_ID" ]; then
+    # Stormshield event whose src field is the test IP — custom-opencti.py
+    # reads src/srcip/dstip/dst and queries OpenCTI for IPv4 indicators.
+    IP_BEFORE=$(docker compose exec -T -e IP="$IP_TEST_IP" wazuh.manager bash -c \
+        'grep -cE "\"id\":\"10021[2-5]\".*\"query_values\":\".*ipv4-addr.*${IP}" /var/ossec/logs/alerts/alerts.json 2>/dev/null || true' \
+        | tr -d '\r' | head -1)
+    IP_BEFORE=${IP_BEFORE:-0}
+    printf '<134>May  5 14:10:00 sns id=firewall time="2026-05-05 14:10:00" fw="sns.test" tz=+0100 startime="2026-05-05 14:10:00" pri=4 confid=01 slotlevel=4 ruleid=2 srcif="in" srcifname="in" ipproto=tcp dstif="out" dstifname="out" proto=https src=%s srcname="external" srcport=12345 srcportname="ephemeral_fw_tcp" dst=10.0.0.50 origdst=10.0.0.50 dstname="target" dstport=443 dstportname="https" action=pass\n' \
+        "$IP_TEST_IP" \
+        | nc -u -w1 localhost 514
+    IP_HIT=false
+    for _ in $(seq 1 8); do
+        sleep 5
+        IP_AFTER=$(docker compose exec -T -e IP="$IP_TEST_IP" wazuh.manager bash -c \
+            'grep -cE "\"id\":\"10021[2-5]\".*\"query_values\":\".*ipv4-addr.*${IP}" /var/ossec/logs/alerts/alerts.json 2>/dev/null || true' \
+            | tr -d '\r' | head -1)
+        IP_AFTER=${IP_AFTER:-0}
+        if [ "$IP_AFTER" -gt "$IP_BEFORE" ]; then IP_HIT=true; break; fi
+    done
+    delete_test_indicator "$IP_IND_ID"
+    if [ "$IP_HIT" = true ]; then
+        echo "  PASS  custom-opencti.py IPv4 path: 100212/100213 fired for $IP_TEST_IP"
+        ((PASS++))
+    else
+        echo "  FAIL  custom-opencti.py IPv4 path: no IOC alert for $IP_TEST_IP"
+        ((FAIL++))
+    fi
+else
+    echo "  FAIL  Could not create test IPv4 indicator in OpenCTI"
+    ((FAIL++))
+fi
+
+# (Domain/hostname path intentionally not exercised here: custom-opencti.py
+# only queries [domain-name:value=...] from sysmon event-id-22 DNS queries
+# or from firewall events where dst is non-numeric. Reproducing either in a
+# smoke test requires a Windows sysmon agent or a hand-crafted firewall log
+# with a hostname dst, neither of which is available in the default profile.)
 
 # --- 9b. Indexer operational state (templates, lifecycle policies) ---
 echo "--- Indexer Operational State ---"
@@ -836,6 +918,33 @@ AEOF
 else
     warn "Shuffle integration not configured in ossec.conf (run setup.sh to enable)"
 fi
+
+# --- Operations end-to-end — upgrade.sh no-op covers backup.sh + rolling
+# restart on a same-versions run. We do not call restore.sh (destructive,
+# already covered by manual round-trip in the commit log). upgrade.sh:
+#  1. calls backup.sh (verifies the tar-warnings.log fix lands all 18 vols)
+#  2. docker compose pull (no-op when versions unchanged)
+#  3. rolling restart of services whose image changed (zero on a no-op run)
+echo "--- Operations Round-Trip ---"
+UPGRADE_BACKUPS_BEFORE=$(ls -1d backups/pre-upgrade-*/ 2>/dev/null | wc -l)
+UPGRADE_OUT=$(bash upgrade.sh 2>&1)
+UPGRADE_EXIT=$?
+UPGRADE_BACKUPS_AFTER=$(ls -1d backups/pre-upgrade-*/ 2>/dev/null | wc -l)
+UPGRADE_LATEST_BACKUP=$(ls -1dt backups/pre-upgrade-*/ 2>/dev/null | head -1)
+UPGRADE_BACKUP_FILES=$(ls "$UPGRADE_LATEST_BACKUP" 2>/dev/null | wc -l)
+if [ "$UPGRADE_EXIT" -eq 0 ] && \
+   [ "$UPGRADE_BACKUPS_AFTER" -gt "$UPGRADE_BACKUPS_BEFORE" ] && \
+   [ "$UPGRADE_BACKUP_FILES" -ge 19 ]; then
+    echo "  PASS  upgrade.sh no-op: backup created ($UPGRADE_BACKUP_FILES files) and rolling restart completed cleanly"
+    ((PASS++))
+else
+    echo "  FAIL  upgrade.sh failed (exit=$UPGRADE_EXIT, backup_files=$UPGRADE_BACKUP_FILES, new_dirs=$((UPGRADE_BACKUPS_AFTER-UPGRADE_BACKUPS_BEFORE)))"
+    ((FAIL++))
+fi
+# Cleanup pre-upgrade backup so the smoke test does not leave artifacts. We
+# keep ./backups/ itself (it is gitignored) so future runs can reuse the
+# directory structure.
+[ -n "$UPGRADE_LATEST_BACKUP" ] && rm -rf "$UPGRADE_LATEST_BACKUP"
 
 # --- 11. Nginx rate limit (last — bursting against /graphql may briefly
 # exhaust the per-IP bucket; keeping this at the end avoids cascading failures
