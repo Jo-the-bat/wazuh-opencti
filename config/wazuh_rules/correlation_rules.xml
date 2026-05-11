@@ -22,7 +22,7 @@
        Built-in rule 5716 = SSHD authentication failure. -->
   <rule id="104000" level="12" frequency="8" timeframe="300">
     <if_matched_sid>5716</if_matched_sid>
-    <same_dstip />
+    <same_field>dstip</same_field>
     <different_srcip />
     <description>Distributed SSH brute-force: multiple sources targeting $(dstip).</description>
     <mitre>
@@ -38,7 +38,7 @@
   <rule id="104001" level="13" timeframe="600">
     <if_sid>5715</if_sid>
     <if_matched_sid>5716</if_matched_sid>
-    <same_srcip />
+    <same_source_ip />
     <description>SSH successful login after multiple failures from $(srcip) - possible credential compromise.</description>
     <mitre>
       <id>T1110</id>
@@ -55,7 +55,7 @@
        References built-in firewall drop rules (2, 5710) and custom Stormshield block (103002). -->
   <rule id="104010" level="11" frequency="15" timeframe="120">
     <if_matched_group>firewall</if_matched_group>
-    <same_srcip />
+    <same_source_ip />
     <description>Possible port scan: $(srcip) triggered 15+ firewall blocks in 120s.</description>
     <mitre>
       <id>T1046</id>
@@ -98,7 +98,7 @@
        Built-in rule 5710 = Possible password guessing attempt. -->
   <rule id="104021" level="12" frequency="10" timeframe="120">
     <if_matched_group>authentication_failed</if_matched_group>
-    <same_srcip />
+    <same_source_ip />
     <description>Multiple authentication failures from $(srcip) across the network - possible lateral movement.</description>
     <mitre>
       <id>T1021</id>
@@ -205,7 +205,7 @@
        Built-in rule 31101 = web server 404, 31104 = web server 403. -->
   <rule id="104043" level="11" frequency="12" timeframe="60">
     <if_matched_sid>31101</if_matched_sid>
-    <same_srcip />
+    <same_source_ip />
     <description>Web scanner detected: $(srcip) triggered 12+ 404 errors in 60s.</description>
     <mitre>
       <id>T1190</id>

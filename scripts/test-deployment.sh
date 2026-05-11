@@ -510,6 +510,40 @@ else
     ((FAIL++))
 fi
 
+# Defense action — README claims "rule 5763 → host-deny for 1 hour" for SSH
+# brute-force. The previous "invalid user" log format triggers 5710 → 5712
+# (which is NOT wired to host-deny). The plain "Failed password for root"
+# format triggers 5760 → 5763 → host-deny. Use a distinct srcip so we can
+# attribute the active-response log entry unambiguously.
+HOSTDENY_TEST_IP="198.51.100.222"
+HOSTDENY_BEFORE=$(docker compose exec -T -e IP="$HOSTDENY_TEST_IP" wazuh.manager bash -c \
+    'grep -cE "active-response/bin/host-deny.*$IP" /var/ossec/logs/active-responses.log 2>/dev/null || true' \
+    | tr -d '\r' | head -1)
+HOSTDENY_BEFORE=${HOSTDENY_BEFORE:-0}
+for i in $(seq 1 12); do
+    printf '<13>May  5 14:30:%02d testhost sshd[1234]: Failed password for root from %s port %d ssh2\n' \
+        "$i" "$HOSTDENY_TEST_IP" "$((50000+i))" \
+        | nc -u -w1 localhost 514
+done
+HOSTDENY_PASS=false
+for _ in $(seq 1 6); do
+    sleep 5
+    HOSTDENY_AFTER=$(docker compose exec -T -e IP="$HOSTDENY_TEST_IP" wazuh.manager bash -c \
+        'grep -cE "active-response/bin/host-deny.*$IP" /var/ossec/logs/active-responses.log 2>/dev/null || true' \
+        | tr -d '\r' | head -1)
+    HOSTDENY_AFTER=${HOSTDENY_AFTER:-0}
+    if [ "$HOSTDENY_AFTER" -gt "$HOSTDENY_BEFORE" ]; then
+        HOSTDENY_PASS=true; break
+    fi
+done
+if [ "$HOSTDENY_PASS" = true ]; then
+    echo "  PASS  Active response: host-deny invoked on sshd brute-force (rule 5763 → AR, $HOSTDENY_TEST_IP)"
+    ((PASS++))
+else
+    echo "  FAIL  Active response: no host-deny entry for $HOSTDENY_TEST_IP after sshd brute-force events"
+    ((FAIL++))
+fi
+
 # Stormshield SNS firewall: a single block event in the documented log format
 # should be decoded (custom stormshield_decoders.xml) and matched by a 103xxx
 # rule (custom stormshield_rules.xml).
