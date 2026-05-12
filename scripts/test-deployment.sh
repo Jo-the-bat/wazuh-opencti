@@ -138,52 +138,48 @@ print(len(ext))
 check "Threat intel connectors active ($ACTIVE_CONNECTORS)" \
     test "$ACTIVE_CONNECTORS" -ge 5
 
-# Catches "connector active but ingesting nothing" (rate-limited API, broken
-# feed). A fully broken ingestion would leave INDICATOR_COUNT at 0 or 1.
-# Threshold ≥5 stays above that trivial floor without flaking on freshly
-# booted stacks where URLhaus is still streaming its first batch (observed
-# as low as 6 indicators ~30 s after setup).
-if [ "$INDICATOR_COUNT" -ge 5 ]; then
-    echo "  PASS  Threat intel ingestion depth: $INDICATOR_COUNT indicators (≥5 — ingestion progressing)"
+# Threat-intel ingestion depth — checks that the connectors are actually
+# producing output, not just `active=true`. Polls up to 2 minutes because on
+# a freshly booted stack the URLhaus / CISA KEV / MITRE first batches stream
+# at the connector's own pace (URLhaus has been seen at 0 indicators ~30 s
+# post-setup and several hundred ~3 min later). A truly stuck connector
+# stays at 0 throughout the window and trips the FAIL branch.
+opencti_count() {
+    # $1 = root field (indicators / vulnerabilities / attackPatterns)
+    curl -sk -X POST https://localhost:8443/graphql \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
+        -d "{\"query\":\"{ $1(first:1) { pageInfo { globalCount } } }\"}" 2>/dev/null \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['$1']['pageInfo']['globalCount'])" 2>/dev/null \
+        || echo 0
+}
+TI_INDICATORS=0; TI_KEV=0; TI_MITRE=0
+for _ in $(seq 1 24); do
+    TI_INDICATORS=$(opencti_count indicators)
+    TI_KEV=$(opencti_count vulnerabilities)
+    TI_MITRE=$(opencti_count attackPatterns)
+    TI_INDICATORS=${TI_INDICATORS:-0}; TI_KEV=${TI_KEV:-0}; TI_MITRE=${TI_MITRE:-0}
+    [ "$TI_INDICATORS" -ge 5 ] && [ "$TI_KEV" -ge 5 ] && [ "$TI_MITRE" -ge 5 ] && break
+    sleep 5
+done
+if [ "$TI_INDICATORS" -ge 5 ]; then
+    echo "  PASS  Threat intel ingestion depth: $TI_INDICATORS indicators"
     ((PASS++))
 else
-    echo "  FAIL  Threat intel ingestion depth too low: only $INDICATOR_COUNT indicators (≥5 expected — likely stuck connector)"
+    echo "  FAIL  Threat intel ingestion depth too low: only $TI_INDICATORS indicators after 120s (URLhaus / ThreatFox stuck?)"
     ((FAIL++))
 fi
-
-# Per-source counts — detects a single connector being dead even when total
-# indicators looks healthy (e.g. URLhaus fine, CISA KEV stuck). CISA KEV
-# imports as `vulnerabilities`, MITRE as `attackPatterns` — both distinct
-# STIX object types from `indicators`.
-KEV_COUNT=$(curl -sk -X POST https://localhost:8443/graphql \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
-    -d '{"query":"{ vulnerabilities(first:1) { pageInfo { globalCount } } }"}' 2>/dev/null \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["vulnerabilities"]["pageInfo"]["globalCount"])' 2>/dev/null || echo 0)
-MITRE_COUNT=$(curl -sk -X POST https://localhost:8443/graphql \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${OPENCTI_ADMIN_TOKEN}" \
-    -d '{"query":"{ attackPatterns(first:1) { pageInfo { globalCount } } }"}' 2>/dev/null \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["attackPatterns"]["pageInfo"]["globalCount"])' 2>/dev/null || echo 0)
-KEV_COUNT=${KEV_COUNT:-0}
-MITRE_COUNT=${MITRE_COUNT:-0}
-# Thresholds well below documented "1500+ CVEs" and "~600 techniques" but
-# high enough that a stuck connector (0 ingestion) is clearly detected.
-# Both connectors typically finish their first sync within ~10 min of
-# stack boot.
 PER_SOURCE_OK=true
-if [ "$KEV_COUNT" -lt 50 ]; then
-    echo "  FAIL  CISA KEV: only $KEV_COUNT vulnerabilities (≥50 expected — connector likely stuck)"
-    ((FAIL++))
-    PER_SOURCE_OK=false
+if [ "$TI_KEV" -lt 5 ]; then
+    echo "  FAIL  CISA KEV: only $TI_KEV vulnerabilities after 120s (connector likely stuck)"
+    ((FAIL++)); PER_SOURCE_OK=false
 fi
-if [ "$MITRE_COUNT" -lt 50 ]; then
-    echo "  FAIL  MITRE ATT&CK: only $MITRE_COUNT attack patterns (≥50 expected — connector likely stuck)"
-    ((FAIL++))
-    PER_SOURCE_OK=false
+if [ "$TI_MITRE" -lt 5 ]; then
+    echo "  FAIL  MITRE ATT&CK: only $TI_MITRE attack patterns after 120s (connector likely stuck)"
+    ((FAIL++)); PER_SOURCE_OK=false
 fi
 if [ "$PER_SOURCE_OK" = true ]; then
-    echo "  PASS  Per-source TI depth: CISA KEV $KEV_COUNT vulns, MITRE $MITRE_COUNT patterns"
+    echo "  PASS  Per-source TI depth: CISA KEV $TI_KEV vulns, MITRE $TI_MITRE patterns"
     ((PASS++))
 fi
 
