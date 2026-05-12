@@ -492,12 +492,28 @@ echo "  Done."
 # ------------------------------------------
 # 8. Start services
 # ------------------------------------------
+# Pull images first so the time spent fetching layers does not eat into
+# the depends_on healthcheck window. On a cold cache this is the slow step,
+# not the actual boot — separating it gives a much more reliable progress
+# signal and avoids `compose up` returning non-zero because Elasticsearch
+# was still being pulled while another service's `depends_on` waited on it.
 echo "[8/9] Starting services..."
-if ! docker compose up -d; then
-    echo "  ERROR: docker compose up failed." >&2
+echo "  Pulling images (may take a few minutes on first install)..."
+docker compose pull --quiet 2>&1 | grep -vE "^time=|level=warning" | tail -5 || true
+
+# `--wait --wait-timeout=600` makes `compose up` block until every service is
+# healthy (or fail clearly after 10 minutes), instead of relying on the
+# implicit depends_on timeout (~60-120s in compose v5) that silently dropped
+# step [9/9] on slower systems. 600 s is comfortably above the worst-case
+# boot we have observed (Elasticsearch / OpenSearch + OpenCTI cold boot can
+# legitimately need 3-4 minutes on smaller hosts).
+if ! docker compose up -d --wait --wait-timeout 600; then
+    echo "  ERROR: docker compose up failed or some services did not reach 'healthy' within 600s." >&2
+    echo "  Re-running this script is safe (idempotent) — Docker keeps the existing containers." >&2
+    docker compose ps --format "table {{.Name}}\t{{.Status}}" 2>&1 | grep -v "healthy" | head -10 >&2 || true
     exit 1
 fi
-echo "  Containers started."
+echo "  Containers started and healthy."
 
 # ------------------------------------------
 # 9. Initialize Wazuh indexer security
